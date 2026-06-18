@@ -1,0 +1,78 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global safety net: Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(data) {
+      return isSignedIn() && data.ownerId == request.auth.uid;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Entity validations
+    function isValidProduct(data) {
+      return data.keys().hasAll(['nombre', 'precioVenta', 'stock', 'unidadMedida', 'ownerId'])
+        && data.nombre is string && data.nombre.size() > 0 && data.nombre.size() <= 200
+        && data.ownerId == request.auth.uid
+        && data.precioVenta is int && data.precioVenta >= 0
+        && (data.stock is int || data.stock is float)
+        && data.unidadMedida is string && data.unidadMedida.size() <= 20;
+    }
+
+    function isValidSale(data) {
+      return data.keys().hasAll(['total', 'metodoPago', 'fecha', 'items', 'ownerId'])
+        && data.total is int && data.total >= 0
+        && data.metodoPago is string && data.metodoPago.size() <= 50
+        && data.ownerId == request.auth.uid
+        && data.items is list;
+    }
+
+    function isValidClient(data) {
+      return data.keys().hasAll(['nombre', 'deudaTotal', 'ownerId'])
+        && data.nombre is string && data.nombre.size() > 0 && data.nombre.size() <= 200
+        && data.ownerId == request.auth.uid
+        && data.deudaTotal is int;
+    }
+
+    // Products collection
+    match /products/{productId} {
+      allow get: if isOwner(resource.data);
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(productId) && isValidProduct(request.resource.data);
+      allow update: if isSignedIn() && isOwner(resource.data) && isValidProduct(request.resource.data)
+                    && request.resource.data.ownerId == resource.data.ownerId; // Immortal ownerId
+      allow delete: if isSignedIn() && isOwner(resource.data);
+    }
+
+    // Sales collection
+    match /sales/{saleId} {
+      allow get: if isOwner(resource.data);
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(saleId) && isValidSale(request.resource.data);
+      allow update: if isSignedIn() && isOwner(resource.data) && isValidSale(request.resource.data)
+                    && request.resource.data.ownerId == resource.data.ownerId; // Immortal ownerId
+      allow delete: if isSignedIn() && isOwner(resource.data);
+    }
+
+    // Clients collection
+    match /clients/{clientId} {
+      allow get: if isOwner(resource.data);
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(clientId) && isValidClient(request.resource.data);
+      allow update: if isSignedIn() && isOwner(resource.data) && isValidClient(request.resource.data)
+                    && request.resource.data.ownerId == resource.data.ownerId; // Immortal ownerId
+      allow delete: if isSignedIn() && isOwner(resource.data);
+    }
+  }
+}

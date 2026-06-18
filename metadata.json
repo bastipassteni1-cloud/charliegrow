@@ -1,0 +1,6 @@
+{
+  "name": "Inventario Almacen Barrio",
+  "description": "Gestor de inventario completo, ventas y fiambrería con asistente de voz inteligente, optimizado para comerciantes de barrio chilenos.",
+  "requestFramePermissions": ["microphone", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
