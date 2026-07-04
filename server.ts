@@ -5,7 +5,7 @@ import os from "os";
 import fs from "node:fs";
 import path from "path";
 import { join } from "node:path";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { createServer as createViteServer } from "vite";
 const HTTPS_PORT = 3443;
 
@@ -118,6 +118,76 @@ function tryStartHttps(expressApp: express.Application) {
 
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+
+// Auto-confirma email de usuario recién registrado
+app.post("/api/confirm-user", async (req, res) => {
+  const { userId } = req.body as { userId: string };
+  if (!userId) { res.status(400).json({ error: "userId requerido" }); return; }
+  const { createClient } = await import("@supabase/supabase-js");
+  const admin = createClient(
+    process.env.VITE_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+  const { error } = await admin.auth.admin.updateUserById(userId, { email_confirm: true });
+  if (error) { res.status(500).json({ error: error.message }); return; }
+  res.json({ ok: true });
+});
+
+// --- Impresión de etiquetas TSPL2 directa (DINON 9385 / 4BARCODE 4B-2054A) ---
+// Rollo 108mm, 3 columnas de ~33mm, gap ~3mm entre columnas
+// Posiciones X en dots (203 DPI = 8 dots/mm): col1=24, col2=312, col3=600
+const IS_WINDOWS = process.platform === "win32";
+// En Windows: nombre exacto de la impresora en Panel de control → Dispositivos
+// En Mac:     nombre de la cola CUPS (lpadmin -p ...)
+const LABEL_PRINTER_WIN = "Charlie Grow Etiquetas";
+const LABEL_PRINTER_MAC = "Charlie_Grow_Labels";
+const COL_X = [24, 312, 600]; // dots desde borde izquierdo del rollo
+
+app.post("/api/print-label", (req, res) => {
+  const { code, name, qty } = req.body as { code: string; name: string; qty: number };
+  if (!code) return res.status(400).json({ error: "Código requerido" });
+
+  const safeCode = code.replace(/[^A-Za-z0-9\-]/g, "").substring(0, 20);
+  const safeName = (name || "").replace(/"/g, "'").substring(0, 22);
+  const count = Math.max(1, Math.min(20, Number(qty) || 1));
+
+  const rows: number[][] = [];
+  for (let i = 0; i < count; i += 3) {
+    rows.push(COL_X.slice(0, Math.min(count - i, 3)));
+  }
+
+  const lines: string[] = ["SIZE 108 mm, 30 mm", "GAP 3 mm, 0", "DIRECTION 0"];
+  for (const rowCols of rows) {
+    lines.push("CLS");
+    for (const x of rowCols) {
+      if (safeName) lines.push(`TEXT ${x + 8},6,"2",0,1,1,"${safeName}"`);
+      lines.push(`BARCODE ${x + 4},${safeName ? 30 : 20},"CODE128",100,1,0,2,4,"${safeCode}"`);
+    }
+    lines.push("PRINT 1,1");
+  }
+
+  const tspl = lines.join("\r\n") + "\r\n";
+  const tmpFile = path.join(os.tmpdir(), `label_${Date.now()}.tspl`);
+
+  try {
+    fs.writeFileSync(tmpFile, tspl, "binary");
+
+    if (IS_WINDOWS) {
+      // Windows: copia raw al puerto de la impresora (requiere driver TSC instalado)
+      execSync(`copy /B "${tmpFile}" "\\\\localhost\\${LABEL_PRINTER_WIN}"`, { shell: "cmd.exe" });
+    } else {
+      // macOS / Linux: lp raw via CUPS
+      execFileSync("lp", ["-d", LABEL_PRINTER_MAC, "-o", "raw", tmpFile]);
+    }
+
+    fs.unlinkSync(tmpFile);
+    res.json({ ok: true, rows: rows.length });
+  } catch (err: any) {
+    try { fs.unlinkSync(tmpFile); } catch { /* ya borrado */ }
+    console.error("[print-label]", err.message);
+    res.status(500).json({ error: err.message || "Error al imprimir" });
+  }
+});
 
 // Setup Vite Development Server or Static Serving
 async function startServer() {

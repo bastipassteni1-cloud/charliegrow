@@ -16,8 +16,16 @@ export default function AuthScreen() {
     setLoading(true);
 
     if (mode === 'register') {
-      const { error } = await supabase.auth.signUp({ email, password });
-      if (error) setError(translateError(error.message));
+      const { data, error } = await supabase.auth.signUp({ email, password });
+      if (error) { setError(translateError(error.message)); setLoading(false); return; }
+      if (data.user) {
+        await fetch('/api/confirm-user', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: data.user.id }),
+        });
+        await supabase.auth.signInWithPassword({ email, password });
+      }
     } else {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) setError(translateError(error.message));
@@ -39,11 +47,10 @@ export default function AuthScreen() {
       <div className="w-full max-w-sm">
 
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-indigo-600 rounded-2xl shadow-lg mb-4">
-            <span className="text-3xl">🏪</span>
+          <div className="inline-flex items-center justify-center w-20 h-20 bg-yellow-400 rounded-2xl shadow-lg mb-4 overflow-hidden">
+            <img src="/logo.jpg" alt="Charlie Grow" className="w-full h-full object-cover" />
           </div>
-          <h1 className="text-2xl font-bold text-slate-800 dark:text-slate-100">Mi Negocio Inteligente</h1>
-          <p className="text-slate-500 dark:text-slate-400 text-sm mt-1">Gestión de ventas e inventario</p>
+          <h1 className="text-2xl font-bold text-slate-800 dark:text-slate-100">Charlie Grow</h1>
         </div>
 
         <div className="bg-white dark:bg-slate-800 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-700 p-6">
@@ -85,7 +92,7 @@ export default function AuthScreen() {
                   required
                   autoComplete="email"
                   placeholder="tu@email.com"
-                  className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
+                  className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 transition"
                 />
               </div>
             </div>
@@ -103,7 +110,7 @@ export default function AuthScreen() {
                   required
                   autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
                   placeholder="Mínimo 6 caracteres"
-                  className="w-full pl-10 pr-10 py-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
+                  className="w-full pl-10 pr-10 py-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 transition"
                 />
                 <button
                   type="button"
@@ -124,7 +131,7 @@ export default function AuthScreen() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold py-3 rounded-xl transition cursor-pointer mt-1"
+              className="w-full bg-yellow-400 hover:bg-yellow-300 disabled:opacity-50 text-slate-900 font-bold py-3 rounded-xl transition cursor-pointer mt-1"
             >
               {loading ? 'Cargando...' : mode === 'login' ? 'Entrar' : 'Crear cuenta'}
             </button>

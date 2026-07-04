@@ -31,7 +31,8 @@ import {
   Eye,
   EyeOff,
   Bell,
-  BellOff
+  BellOff,
+  Printer
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { supabase, toProduct, fromProduct, toSale } from "./supabase";
@@ -42,6 +43,7 @@ import AuthScreen from "./AuthScreen";
 import { BrowserMultiFormatReader } from "@zxing/browser";
 import Quagga from "@ericblade/quagga2";
 import { readBarcodes } from "zxing-wasm/reader";
+import { Joyride, ACTIONS, EVENTS, STATUS, type EventData, type Step } from "react-joyride";
 import heic2any from "heic2any";
 
 type PendingOp = {
@@ -49,6 +51,33 @@ type PendingOp = {
   timestamp: string;
   type: 'ADD_PRODUCT' | 'UPDATE_PRODUCT' | 'DELETE_PRODUCT' | 'UPDATE_STOCK' | 'CHECKOUT_SALE' | 'DELETE_SALE';
   data: any;
+};
+
+// Unique categories helper — defined outside component to avoid recreation on every render
+const uuid = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+  const r = Math.random() * 16 | 0;
+  return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+});
+
+const categories = ["Todos", "Semillas", "Nutrientes", "Sustratos", "Iluminación", "Equipamiento", "Papeles y Filtros", "CBD", "Accesorios", "Otros"];
+
+const detectCategoria = (text: string): string => {
+  const t = text.toLowerCase();
+  if (/semilla|seed|cannabis|marihuana|feminiz|autoflow|indica|sativa|hybrid|kush|haze|og |gorilla|gelato|zkittlez|runtz|wedding cake|bruce banner|northern light|white widow/i.test(t))
+    return "Semillas";
+  if (/nutrien|fertiliz|abono|estimulador|booster|bloom|grow|biobizz|canna|plagron|advanced nutrient|general hydropon|athena|verde|enzym|root|raiz|pk|npk|cal.?mag|calcium|magnesium|humic|fulvic/i.test(t))
+    return "Nutrientes";
+  if (/sustrato|substrate|tierra|coco|cocotek|perlita|perlite|vermiculit|fibra de coco|turba|arcilla|clay|lana de roca|rockwool|grow bag|bolsa de cultivo/i.test(t))
+    return "Sustratos";
+  if (/led|hps|cfl|cmh|lec|light|luz|lamp|luminaria|foco|reflector|hood|driver|quantum board|hlg|mars hydro|spider farmer|gavita|lumatek|lux|watt|espectro/i.test(t))
+    return "Iluminación";
+  if (/fan|ventilador|extractor|carbon filter|filtro de carbon|carbon activo|tent|carpa|grow tent|intake|ph meter|ph metro|ec meter|tds|humidity|hygrometer|timer|temporizador|controlador|controller|clip fan|inline fan|duct/i.test(t))
+    return "Equipamiento";
+  if (/paper|papel|rolling|ocb|raw |rizla|slim|king size|filter tip|boquilla|grinder|molino|pipe|pipa|bong|bubbler|bowl|vaporiz|vaporizador|dugout|one hitter/i.test(t))
+    return "Papeles y Filtros";
+  if (/cbd|cannabidiol|hemp|cañamo|canamo|broad.?spectrum|full.?spectrum|aceite cbd|oil cbd|tincture/i.test(t))
+    return "CBD";
+  return "Accesorios";
 };
 
 export default function App() {
@@ -80,6 +109,7 @@ export default function App() {
   });
   const [isSyncingQueue, setIsSyncingQueue] = useState(false);
   const isSyncingRef = useRef(false);
+  const isLoadingRef = useRef(false);
   const reloadRef = useRef<() => Promise<void>>(async () => {});
 
   // Live camera scanner
@@ -92,6 +122,8 @@ export default function App() {
   // Escaneo de carrito por foto (no requiere HTTPS)
   const [isScanningCartPhoto, setIsScanningCartPhoto] = useState(false);
   const cartPhotoInputRef = useRef<HTMLInputElement>(null);
+  const barcodeInputRef = useRef<HTMLInputElement>(null);
+  const notifyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // UI state - Notifications
   const [notification, setNotification] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
@@ -103,11 +135,21 @@ export default function App() {
 
   // POS / Cart State
   const [cart, setCart] = useState<SaleItem[]>([]);
+  const [lastSale, setLastSale] = useState<Sale | null>(null);
+  const [discountPct, setDiscountPct] = useState<number>(0);
+  const [salesFilter, setSalesFilter] = useState<"all" | "today" | "yesterday" | "week" | "month">("all");
   const [paymentMethod, setPaymentMethod] = useState<Sale["metodoPago"]>("Efectivo");
   const [cashAmount, setCashAmount] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [barcodeSearch, setBarcodeSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string>("Todos");
+  const [customCategories, setCustomCategories] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('custom_categories') || '[]'); } catch { return []; }
+  });
+  const [showAddCategoryInput, setShowAddCategoryInput] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState("");
+
+  const [lowStockAlert, setLowStockAlert] = useState<{ nombre: string; stock: number; stockMinimo: number; unidadMedida: string }[]>([]);
 
   // Venta rápida expandible
   const [showVentaRapida, setShowVentaRapida] = useState(false);
@@ -116,7 +158,7 @@ export default function App() {
   const [showAddProductModal, setShowAddProductModal] = useState(false);
   const [showEditStockModal, setShowEditStockModal] = useState<Product | null>(null);
   const [editForm, setEditForm] = useState({
-    nombre: "", codigoBarras: "", categoria: "Alimentación",
+    nombre: "", codigoBarras: "", categoria: "Accesorios",
     precioCompra: "", precioVenta: "", stock: "", stockMinimo: "", unidadMedida: "unidades"
   });
   const [confirmModal, setConfirmModal] = useState<{ message: string; onConfirm: () => void } | null>(null);
@@ -147,10 +189,27 @@ export default function App() {
   const [upgradeShowPassword, setUpgradeShowPassword] = useState(false);
   const [upgradeLoading, setUpgradeLoading] = useState(false);
 
+  const allCategories = ["Todos", ...categories.filter(c => c !== "Todos"), ...customCategories];
+
+  const addCategory = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed || allCategories.includes(trimmed)) return;
+    const updated = [...customCategories, trimmed];
+    setCustomCategories(updated);
+    localStorage.setItem('custom_categories', JSON.stringify(updated));
+    setNewCategoryName("");
+    setShowAddCategoryInput(false);
+  };
+
+  // Tour guiado
+  const [tourRunning, setTourRunning] = useState(false);
+  const [tourStep, setTourStep] = useState(0);
+
   // Alertas (notificación navegador + email via Supabase)
   const [showAlertModal, setShowAlertModal] = useState(false);
   const [alertsEnabled, setAlertsEnabled] = useState(() => localStorage.getItem('alerts_enabled') === 'true');
   const [alertTestLoading, setAlertTestLoading] = useState(false);
+
 
   const requestNotificationPermission = async () => {
     if (!('Notification' in window)) return false;
@@ -178,7 +237,7 @@ export default function App() {
   const [newProduct, setNewProduct] = useState({
     nombre: "",
     codigoBarras: "",
-    categoria: "Alimentación",
+    categoria: "Accesorios",
     precioCompra: "",
     precioVenta: "",
     stock: "10",
@@ -186,14 +245,13 @@ export default function App() {
     unidadMedida: "unidades"
   });
 
-  // Unique categories helper
-  const categories = ["Todos", "Alimentación", "Bebidas", "Snacks y Dulces", "Refrigerados", "Panadería", "Aseo y Limpieza", "Electrónica", "Ropa y Accesorios", "Otros"];
-
   // Show visual notification helper
   const notify = (message: string, type: "success" | "error" | "info" = "success") => {
+    if (notifyTimeoutRef.current) clearTimeout(notifyTimeoutRef.current);
     setNotification({ message, type });
-    setTimeout(() => {
+    notifyTimeoutRef.current = setTimeout(() => {
       setNotification(null);
+      notifyTimeoutRef.current = null;
     }, 4000);
   };
 
@@ -251,13 +309,14 @@ export default function App() {
     setSyncError(null);
 
     const loadAll = async () => {
-      if (isSyncingRef.current) return;
+      if (isSyncingRef.current || isLoadingRef.current) return;
+      isLoadingRef.current = true;
       const { data: prods, error: prodErr } = await supabase
         .from('products')
         .select('*')
         .order('updated_at', { ascending: false });
 
-      if (prodErr) { setSyncError("Error cargando productos."); setIsSyncing(false); return; }
+      if (prodErr) { setSyncError("Error cargando productos."); notify("Error al cargar productos. Revisa tu conexión.", "error"); setIsSyncing(false); isLoadingRef.current = false; return; }
       setProducts(prods ? prods.map(toProduct) : []);
 
       const { data: salesData, error: salesErr } = await supabase
@@ -265,8 +324,10 @@ export default function App() {
         .select('*, sale_items(*)')
         .order('fecha', { ascending: false });
 
-      if (!salesErr && salesData) setSales(salesData.map(toSale));
+      if (salesErr) notify("Error al cargar ventas. Los datos pueden estar desactualizados.", "error");
+      else if (salesData) setSales(salesData.map(toSale));
       setIsSyncing(false);
+      isLoadingRef.current = false;
     };
 
     reloadRef.current = loadAll;
@@ -375,6 +436,20 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showLiveScanner]);
 
+  // Redirige teclas de la pistola USB al input de código de barras cuando no hay otro foco
+  useEffect(() => {
+    const handleGlobalKey = (e: KeyboardEvent) => {
+      if (activeTab !== 'caja') return;
+      const tag = (e.target as HTMLElement).tagName;
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;
+      if (e.key.length === 1 || e.key === 'Enter') {
+        barcodeInputRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKey);
+    return () => window.removeEventListener('keydown', handleGlobalKey);
+  }, [activeTab]);
+
   const queueOp = (type: PendingOp['type'], data: any) => {
     const op: PendingOp = { id: `op-${Date.now()}`, timestamp: new Date().toISOString(), type, data };
     setPendingOps(prev => [...prev, op]);
@@ -477,7 +552,7 @@ export default function App() {
         ...topProducts.map((p, i) => `  ${i + 1}. ${p.nombre} — ${p.cantidad} uds — $${p.total.toLocaleString("es-CL")}`),
       ] : []),
       ``,
-      `⚡ Mi Negocio Inteligente`,
+      `⚡ Charlie Grow`,
     ];
 
     const text = lines.join("\n");
@@ -512,6 +587,51 @@ export default function App() {
       setIsAnalyzing(false);
     }
   };
+
+  const printReceipt = (sale: Sale) => {
+    const dateStr = new Date(sale.fecha).toLocaleString('es-CL', {
+      day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit'
+    });
+    const rows = sale.items.map(item => `
+      <tr>
+        <td style="padding:1mm 0;vertical-align:top">${item.nombre}</td>
+        <td style="text-align:right;padding:1mm 0;white-space:nowrap">${item.cantidad} u.</td>
+        <td style="text-align:right;padding:1mm 0;white-space:nowrap">$${item.precioUnitario.toLocaleString('es-CL')}</td>
+        <td style="text-align:right;padding:1mm 0;white-space:nowrap;font-weight:bold">$${item.subtotal.toLocaleString('es-CL')}</td>
+      </tr>`).join('');
+
+    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
+      *{margin:0;padding:0;box-sizing:border-box}
+      body{font-family:'Courier New',monospace;font-size:11px;width:58mm;padding:3mm}
+      .center{text-align:center}.bold{font-weight:bold}.large{font-size:15px}
+      .divider{border-top:1px dashed #000;margin:2.5mm 0}
+      table{width:100%;border-collapse:collapse}
+      @media print{@page{size:58mm auto;margin:0}body{width:58mm}}
+    </style></head><body>
+      <div class="center bold large">Charlie Grow</div>
+      <div class="center" style="font-size:9px">Ahumada 85, local 020 subterráneo</div>
+      <div class="center" style="font-size:9px;margin-top:1mm">${dateStr}</div>
+      <div class="divider"></div>
+      <table><tbody>${rows}</tbody></table>
+      <div class="divider"></div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:bold">
+        <span>TOTAL</span><span>$${sale.total.toLocaleString('es-CL')}</span>
+      </div>
+      <div style="font-size:10px;margin-top:1.5mm">Pago: ${sale.metodoPago}</div>
+      <div class="divider"></div>
+      <div class="center" style="font-size:9px">¡Gracias por tu compra!</div>
+      <br>
+    </body></html>`;
+
+    const blob = new Blob([html], { type: 'text/html; charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const w = window.open(url, '_blank', 'width=300,height=600,menubar=no,toolbar=no,location=no,scrollbars=no');
+    if (!w) { notify('Permite las ventanas emergentes para imprimir.', 'error'); URL.revokeObjectURL(url); return; }
+    w.addEventListener('afterprint', () => { w.close(); URL.revokeObjectURL(url); });
+    setTimeout(() => { w.focus(); w.print(); }, 700);
+  };
+
 
   // Apply parsed Gemini instructions into the actual cart or stocks
   const applyDictationResult = async () => {
@@ -620,7 +740,7 @@ export default function App() {
       notify("Atención: El precio de venta es menor que el de compra.", "info");
     }
 
-    const id = "prod-" + Date.now();
+    const id = uuid();
     const createdProduct: Product = {
       id,
       nombre: newProduct.nombre,
@@ -634,13 +754,13 @@ export default function App() {
       updatedAt: new Date().toISOString()
     };
 
-    if (!user) return;
+    if (!user) { notify("Sesión expirada. Recarga la página.", "error"); return; }
     setProducts(prev => [createdProduct, ...prev]);
     if (isOnline) {
       const { error } = await supabase.from('products').insert(fromProduct(createdProduct, user.id));
       if (error) {
         setProducts(prev => prev.filter(p => p.id !== createdProduct.id));
-        notify("Error al guardar el producto.", "error");
+        notify(`Error: ${error.message}`, "error");
         return;
       }
     } else {
@@ -652,7 +772,7 @@ export default function App() {
     setNewProduct({
       nombre: "",
       codigoBarras: "",
-      categoria: "Alimentación",
+      categoria: "Accesorios",
       precioCompra: "",
       precioVenta: "",
       stock: "10",
@@ -743,6 +863,7 @@ export default function App() {
   // Photo scanner handlers
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
 
     let blob: Blob = file;
@@ -869,13 +990,12 @@ export default function App() {
       if (!rawProduct) upcItem = await fetchUpcItemDb();
 
       let nombre: string;
-      let categoria = "Alimentación";
+      let categoria = "Accesorios";
       let unidadMedida = "unidades";
       let descripcion = `EAN: ${barcode}`;
       const found = !!(rawProduct || upcItem);
 
       if (rawProduct?._upc) {
-        // No debería pasar, pero por si acaso
         rawProduct = null;
       }
 
@@ -890,18 +1010,15 @@ export default function App() {
         nombre = nameParts.filter(Boolean).join(" ").trim() || `Producto ${barcode}`;
         unidadMedida = /\b(l|ml|litro|liter)/i.test(quantity) ? "litros" : "unidades";
 
-        const tags: string[] = rawProduct.categories_tags || rawProduct.labels_tags || [];
-        const hasTag = (kws: string[]) => tags.some(t => kws.some(k => t.includes(k)));
-        if (hasTag(["beverage","drink","soda","water","juice","beer","wine","spirit","alcohol"])) {
-          categoria = "Bebidas";
-        } else if (hasTag(["snack","chip","cracker","cookie","chocolate","candy","sweet","confection"])) {
-          categoria = "Snacks y Dulces";
-        } else if (hasTag(["dairy","milk","cheese","yogurt","butter","meat","ham","poultry"])) {
-          categoria = "Refrigerados";
-        } else if (hasTag(["bread","pastry","baked","bakery"])) {
-          categoria = "Panadería";
-        } else if (hasTag(["cleaning","hygiene","household","detergent","soap","deodorant","beauty","body-care","personal-care","hair","cosmetic","perfume","shower","shampoo"])) {
-          categoria = "Aseo y Limpieza";
+        // Detectar por nombre primero (más preciso para growshop)
+        categoria = detectCategoria(nombre + " " + (rawProduct.categories || ""));
+
+        // Fallback: tags de Open Food Facts si no se detectó growshop
+        if (categoria === "Accesorios") {
+          const tags: string[] = rawProduct.categories_tags || rawProduct.labels_tags || [];
+          const hasTag = (kws: string[]) => tags.some(t => kws.some(k => t.includes(k)));
+          if (hasTag(["beverage","drink","soda","water","juice","beer","wine","spirit","alcohol"]))
+            categoria = "Accesorios";
         }
       } else if (upcItem) {
         const brand = upcItem.brand || "";
@@ -910,15 +1027,7 @@ export default function App() {
         const nameParts = [title];
         if (brand && !title.toLowerCase().includes(brand.toLowerCase())) nameParts.unshift(brand);
         nombre = nameParts.filter(Boolean).join(" ").trim() || `Producto ${barcode}`;
-
-        const cat = (upcItem.category || "").toLowerCase();
-        if (/beverage|drink|juice|soda|water|beer|wine/.test(cat)) categoria = "Bebidas";
-        else if (/snack|candy|chocolate|chip|cookie|sweet/.test(cat)) categoria = "Snacks y Dulces";
-        else if (/dairy|milk|cheese|meat|poultry/.test(cat)) categoria = "Refrigerados";
-        else if (/bread|bakery|pastry/.test(cat)) categoria = "Panadería";
-        else if (/health|beauty|personal|hygiene|deodorant|soap|cleaning|cosmetic|hair/.test(cat)) categoria = "Aseo y Limpieza";
-        else if (/electronic|tech|gadget|computer|phone|cable/.test(cat)) categoria = "Electrónica";
-        else if (/clothing|apparel|fashion|shirt|pants|shoes/.test(cat)) categoria = "Ropa y Accesorios";
+        categoria = detectCategoria(nombre + " " + (upcItem.category || "") + " " + (upcItem.description || ""));
       } else {
         nombre = `Producto ${barcode}`;
       }
@@ -953,7 +1062,7 @@ export default function App() {
     const stockQty = parseFloat(aiProductStock) || 0;
     const sMinimo = parseFloat(aiProductStockMin) || 3;
 
-    const id = "prod-" + Date.now();
+    const id = uuid();
     const createdProduct = {
       id,
       nombre: aiAnalyzedProduct.nombre,
@@ -1021,6 +1130,7 @@ export default function App() {
       notify("El nombre y el precio de venta son obligatorios.", "error");
       return;
     }
+    const originalProduct = showEditStockModal; // capture before clearing
 
     const updatedProduct: Product = {
       ...showEditStockModal,
@@ -1051,7 +1161,7 @@ export default function App() {
         updated_at: updatedProduct.updatedAt,
       }).eq('id', updatedProduct.id);
       if (error) {
-        setProducts(prev => prev.map(p => p.id === showEditStockModal.id ? showEditStockModal : p));
+        setProducts(prev => prev.map(p => p.id === originalProduct.id ? originalProduct : p)); // use captured original
         notify("Error al guardar los cambios.", "error");
         return;
       }
@@ -1112,18 +1222,20 @@ export default function App() {
     setCart(prev => {
       const existing = prev.find(item => item.id === product.id);
       if (existing) {
+        const step = product.unidadMedida === 'kg' ? 0.25 : 1;
         return prev.map(item =>
           item.id === product.id
-            ? { ...item, cantidad: item.cantidad + 1, subtotal: item.precioUnitario * (item.cantidad + 1) }
+            ? { ...item, cantidad: item.cantidad + step, subtotal: item.precioUnitario * (item.cantidad + step) }
             : item
         );
       }
+      const initialQty = product.unidadMedida === 'kg' ? 0.25 : 1;
       return [...prev, {
         id: product.id,
         nombre: product.nombre,
-        cantidad: 1,
+        cantidad: initialQty,
         precioUnitario: product.precioVenta,
-        subtotal: product.precioVenta,
+        subtotal: product.precioVenta * initialQty,
         unidadMedida: product.unidadMedida
       }];
     });
@@ -1143,7 +1255,9 @@ export default function App() {
   };
 
   // Total cart calculator
-  const cartTotal = cart.reduce((sum, item) => sum + item.subtotal, 0);
+  const cartSubtotal = cart.reduce((sum, item) => sum + item.subtotal, 0);
+  const discountAmount = Math.round(cartSubtotal * (discountPct / 100));
+  const cartTotal = cartSubtotal - discountAmount;
 
   // Submit cart sale transaction
   const checkoutSale = async () => {
@@ -1152,7 +1266,7 @@ export default function App() {
       return;
     }
 
-    const saleId = "sale-" + Date.now();
+    const saleId = uuid();
     const now = new Date().toISOString();
 
     const completedSale: Sale = {
@@ -1181,10 +1295,21 @@ export default function App() {
     });
     setProducts(updatedProducts);
     setCart([]);
+    setLastSale(completedSale);
     setAnalysisResult(null);
     setCashAmount("");
+    setDiscountPct(0);
 
-    // Alerta email si algún producto cruzó el umbral mínimo
+    // Alerta de stock bajo para productos afectados por esta venta
+    const lowAfterSale = stockUpdates
+      .map(u => updatedProducts.find(p => p.id === u.id))
+      .filter((p): p is typeof updatedProducts[0] => !!p && p.stock <= p.stockMinimo);
+
+    if (lowAfterSale.length > 0) {
+      setLowStockAlert(lowAfterSale);
+    }
+
+    // Email solo a los que recién cruzaron el umbral
     const crossedMinimum = stockUpdates
       .map(u => {
         const prev = products.find(p => p.id === u.id);
@@ -1238,16 +1363,19 @@ export default function App() {
         const cartItem = completedSale.items.find(c => c.id === p.id);
         return upd && cartItem ? { ...p, stock: upd.stock + cartItem.cantidad } : p;
       }));
-      notify("No se pudo procesar la venta.", "error");
+      setCart(completedSale.items);
+      setLastSale(null);
+      notify("No se pudo procesar la venta. El carrito fue restaurado.", "error");
     }
   };
 
   // Barcode quick search scanner simulator (Very useful for neighbor stores)
   const handleBarcodeSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!barcodeSearch) return;
+    const code = barcodeSearch.trim();
+    if (!code) return;
 
-    const matched = products.find(p => p.codigoBarras === barcodeSearch);
+    const matched = products.find(p => p.codigoBarras === code);
     if (matched) {
       addToCart(matched);
       notify(`Se agregó ${matched.nombre} al carrito.`, "success");
@@ -1358,7 +1486,7 @@ export default function App() {
   if (loadingAuth) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
-        <RefreshCw className="w-8 h-8 text-indigo-600 animate-spin" />
+        <RefreshCw className="w-8 h-8 text-yellow-600 animate-spin" />
       </div>
     );
   }
@@ -1366,6 +1494,136 @@ export default function App() {
   if (!user) {
     return <AuthScreen />;
   }
+
+  // ── Tour guiado ──────────────────────────────────────────────────────────
+  const TOUR_TAB: Record<number, 'caja' | 'inventario' | 'ventas' | 'reportes'> = {
+    0:'caja', 1:'caja', 2:'caja', 3:'caja', 4:'caja', 5:'caja', 6:'caja',
+    7:'inventario', 8:'inventario', 9:'inventario',
+    10:'ventas',
+    11:'reportes', 12:'reportes',
+  };
+
+  const tourSteps: Step[] = [
+    {
+      target: 'body',
+      placement: 'center',
+      title: '¡Bienvenido/a a Charlie Grow! 👋',
+      content: 'Te mostramos en 2 minutos cómo usar la app. Toca Siguiente para empezar o ✕ para salir.',
+      skipBeacon: true,
+    },
+    {
+      target: '#tab-caja',
+      placement: 'right',
+      title: 'Caja 🛒',
+      content: 'Aquí registras cada venta. Es la pantalla que usarás todo el día.',
+      skipBeacon: true,
+    },
+    {
+      target: '#tour-search',
+      placement: 'bottom',
+      title: 'Buscar producto',
+      content: 'Escribe el nombre del producto para encontrarlo en tu catálogo.',
+      skipBeacon: true,
+    },
+    {
+      target: '#tour-barcode',
+      placement: 'bottom',
+      title: 'Pistola de códigos de barras',
+      content: 'Pasa la pistola lectora sobre el código. El producto se agrega al carrito solo.',
+      skipBeacon: true,
+    },
+    {
+      target: '#tour-catalog',
+      placement: 'top',
+      title: 'Catálogo de productos',
+      content: 'Toca cualquier tarjeta para agregarla al carrito. Cada clic suma una unidad más.',
+      skipBeacon: true,
+    },
+    {
+      target: '#tour-modo-avanzado',
+      placement: 'top',
+      title: 'Venta por texto ✨',
+      content: 'Describe la venta con tus palabras: «2 papeles OCB y un grinder con débito». La app lo entiende.',
+      skipBeacon: true,
+    },
+    {
+      target: '#tour-boleta',
+      placement: 'left',
+      title: 'Boleta y cobro',
+      content: 'Elige Efectivo, Débito, Crédito o Transferencia. Aplica descuento si quieres y presiona Cobrar.',
+      skipBeacon: true,
+    },
+    {
+      target: '#tab-inventario',
+      placement: 'right',
+      title: 'Stock / Inventario 📦',
+      content: 'Aquí administras todos tus productos: precios, cantidades y alertas cuando se acaban.',
+      skipBeacon: true,
+    },
+    {
+      target: '#tour-inv-nuevo',
+      placement: 'bottom',
+      title: 'Agregar producto',
+      content: 'Toca + Nuevo para registrar un producto nuevo con nombre, precio de costo, precio de venta y stock.',
+      skipBeacon: true,
+    },
+    {
+      target: '#tour-inv-foto',
+      placement: 'bottom',
+      title: 'Agregar con foto 📷',
+      content: 'Saca una foto del producto y la inteligencia artificial identifica nombre y categoría automáticamente.',
+      skipBeacon: true,
+    },
+    {
+      target: '#tab-ventas',
+      placement: 'right',
+      title: 'Historial de Ventas 🧾',
+      content: 'Consulta todas las boletas registradas. Filtra por hoy, ayer, esta semana o este mes.',
+      skipBeacon: true,
+    },
+    {
+      target: '#tab-reportes',
+      placement: 'right',
+      title: 'Reportes 📈',
+      content: 'Ve cuánto vendiste hoy, qué producto se vende más y cómo va la semana.',
+      skipBeacon: true,
+    },
+    {
+      target: 'body',
+      placement: 'center',
+      title: '¡Listo! 🎉',
+      content: 'Ya conoces lo básico. Cuando quieras volver a ver el tour, toca el botón ? en la esquina superior derecha.',
+      skipBeacon: true,
+    },
+  ];
+
+  const handleTourCallback = (data: EventData) => {
+    const { action, index, status, type } = data;
+
+    if (type === EVENTS.STEP_AFTER || type === EVENTS.TARGET_NOT_FOUND) {
+      const nextIndex = index + (action === ACTIONS.PREV ? -1 : 1);
+      const clampedNext = Math.max(0, Math.min(tourSteps.length - 1, nextIndex));
+      const nextTab = TOUR_TAB[clampedNext];
+      const currentTab = TOUR_TAB[index];
+
+      if (nextTab && nextTab !== currentTab) {
+        setTourRunning(false);
+        setActiveTab(nextTab);
+        setTimeout(() => {
+          setTourStep(clampedNext);
+          setTourRunning(true);
+        }, 350);
+      } else {
+        setTourStep(clampedNext);
+      }
+    }
+
+    if (status === STATUS.FINISHED || status === STATUS.SKIPPED) {
+      setTourRunning(false);
+      setTourStep(0);
+    }
+  };
+  // ─────────────────────────────────────────────────────────────────────────
 
   return (
     <div id="app-container" className="min-h-screen bg-slate-50 text-slate-800 font-sans flex flex-col antialiased">
@@ -1393,21 +1651,18 @@ export default function App() {
       </AnimatePresence>
 
       {/* Top Friendly Header */}
-      <header id="main-header" className="bg-slate-900 text-white shadow-md border-b border-slate-800">
+      <header id="main-header" className="bg-white border-b border-slate-200/80 shadow-sm">
         <div className="max-w-7xl mx-auto px-3 py-2 md:px-4 md:py-3 flex items-center justify-between gap-2">
           {/* Logo + title */}
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="bg-indigo-500 p-1.5 md:p-2 rounded-xl text-white shadow shrink-0">
-              <span className="text-lg md:text-2xl font-bold font-mono">🏪</span>
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="bg-yellow-400 p-1 rounded-xl shadow-sm shrink-0 overflow-hidden">
+              <img src="/logo.jpg" alt="Charlie Grow" className="w-8 h-8 md:w-10 md:h-10 object-cover rounded-lg" />
             </div>
-            {/* Nombre: solo en md+ */}
-            <div className="min-w-0 hidden md:block">
-              <h1 id="app-title" className="text-xl font-bold tracking-tight font-sans truncate">
-                Mi Negocio Inteligente
+            <div className="min-w-0">
+              <h1 id="app-title" className="text-lg md:text-xl font-extrabold tracking-tight text-slate-900 truncate leading-none">
+                Charlie Grow
               </h1>
-              <p className="text-[10px] text-slate-400 font-sans">
-                Gestión intuitiva de ventas e inventario para tu negocio
-              </p>
+              <p className="text-[10px] text-slate-400 font-medium hidden md:block">Grow Shop · Ahumada 85</p>
             </div>
           </div>
 
@@ -1431,6 +1686,12 @@ export default function App() {
                 )}
               </div>
             )}
+            {syncError && (
+              <div className="flex items-center gap-1 text-xs bg-rose-100 text-rose-700 px-2 py-0.5 rounded-full font-semibold" title={syncError}>
+                <AlertCircle className="w-3 h-3" />
+                <span className="hidden sm:inline">Error sync</span>
+              </div>
+            )}
             {!isSyncingQueue && isOnline && pendingOps.length > 0 && (
               <button
                 onClick={() => syncQueue(pendingOps)}
@@ -1443,25 +1704,32 @@ export default function App() {
             )}
             <button
               onClick={() => setShowAlertModal(true)}
-              className={`w-8 h-8 flex items-center justify-center rounded-xl transition cursor-pointer relative ${alertsEnabled ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-slate-700 hover:bg-slate-600'}`}
+              className={`w-10 h-10 flex items-center justify-center rounded-xl transition cursor-pointer relative ${alertsEnabled ? 'bg-emerald-50 hover:bg-emerald-100' : 'bg-slate-100 hover:bg-slate-200'}`}
               title="Alertas de stock"
             >
-              {alertsEnabled ? <Bell className="w-4 h-4 text-white" /> : <BellOff className="w-4 h-4 text-slate-300" />}
-              {alertsEnabled && <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-emerald-300 rounded-full" />}
+              {alertsEnabled ? <Bell className="w-5 h-5 text-emerald-600" /> : <BellOff className="w-5 h-5 text-slate-400" />}
+              {alertsEnabled && <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-emerald-400 rounded-full" />}
             </button>
             <button
               onClick={() => setIsDark(d => !d)}
-              className="w-8 h-8 flex items-center justify-center rounded-xl bg-slate-700 hover:bg-slate-600 transition cursor-pointer text-base"
+              className="w-10 h-10 flex items-center justify-center rounded-xl bg-slate-100 hover:bg-slate-200 transition cursor-pointer text-xl"
               title={isDark ? "Modo claro" : "Modo oscuro"}
             >
               {isDark ? "☀️" : "🌙"}
             </button>
             <button
+              onClick={() => { setActiveTab('caja'); setTourStep(0); setTourRunning(true); }}
+              className="w-10 h-10 flex items-center justify-center rounded-xl bg-slate-100 hover:bg-yellow-100 transition cursor-pointer font-bold text-slate-500 hover:text-yellow-700 text-base"
+              title="Ver guía de uso"
+            >
+              ?
+            </button>
+            <button
               onClick={handleLogout}
-              className="w-8 h-8 flex items-center justify-center rounded-xl bg-slate-700 hover:bg-rose-700 transition cursor-pointer"
+              className="w-10 h-10 flex items-center justify-center rounded-xl bg-slate-100 hover:bg-rose-50 hover:text-rose-500 transition cursor-pointer"
               title="Cerrar sesión"
             >
-              <LogOut className="w-4 h-4 text-slate-300" />
+              <LogOut className="w-5 h-5 text-slate-400 hover:text-rose-500" />
             </button>
           </div>
         </div>
@@ -1484,10 +1752,10 @@ export default function App() {
       )}
 
       {/* Main Container Area */}
-      <main className={`flex-1 w-full max-w-7xl mx-auto px-4 py-6 flex flex-col md:flex-row gap-6 ${cart.length > 0 && activeTab === 'caja' ? 'pb-32 md:pb-6' : ''}`}>
+      <main className={`flex-1 w-full max-w-7xl mx-auto px-4 py-6 flex flex-col md:flex-row gap-6 pb-20 md:pb-6 ${(cart.length > 0 || (lastSale && cart.length === 0)) && activeTab === 'caja' ? 'pb-36 md:pb-6' : ''}`}>
         
         {/* Navigation Sidebar Controls */}
-        <aside id="nav-and-actions" className="w-full md:w-48 flex flex-col gap-4 shrink-0">
+        <aside id="nav-and-actions" className="hidden md:flex md:w-48 flex-col gap-4 shrink-0">
 
           <div className="bg-white p-2 rounded-2xl border border-slate-200/80 shadow-sm flex flex-row md:flex-col gap-1">
             <button
@@ -1495,7 +1763,7 @@ export default function App() {
               onClick={() => setActiveTab("caja")}
               className={`flex-1 md:flex-none flex flex-col md:flex-row items-center justify-center md:justify-start gap-1 md:gap-3 py-2 md:py-3.5 px-1 md:px-4 rounded-xl font-bold transition-all cursor-pointer ${
                 activeTab === "caja"
-                  ? "bg-indigo-50 text-indigo-700 shadow-sm"
+                  ? "bg-yellow-50 text-yellow-700 shadow-sm"
                   : "text-slate-500 hover:bg-slate-50"
               }`}
             >
@@ -1508,7 +1776,7 @@ export default function App() {
               onClick={() => setActiveTab("inventario")}
               className={`flex-1 md:flex-none flex flex-col md:flex-row items-center justify-center md:justify-start gap-1 md:gap-3 py-2 md:py-3.5 px-1 md:px-4 rounded-xl font-bold transition-all cursor-pointer relative ${
                 activeTab === "inventario"
-                  ? "bg-indigo-50 text-indigo-700 shadow-sm"
+                  ? "bg-yellow-50 text-yellow-700 shadow-sm"
                   : "text-slate-500 hover:bg-slate-50"
               }`}
             >
@@ -1526,7 +1794,7 @@ export default function App() {
               onClick={() => setActiveTab("ventas")}
               className={`flex-1 md:flex-none flex flex-col md:flex-row items-center justify-center md:justify-start gap-1 md:gap-3 py-2 md:py-3.5 px-1 md:px-4 rounded-xl font-bold transition-all cursor-pointer ${
                 activeTab === "ventas"
-                  ? "bg-indigo-50 text-indigo-700 shadow-sm"
+                  ? "bg-yellow-50 text-yellow-700 shadow-sm"
                   : "text-slate-500 hover:bg-slate-50"
               }`}
             >
@@ -1539,7 +1807,7 @@ export default function App() {
               onClick={() => setActiveTab("reportes")}
               className={`flex-1 md:flex-none flex flex-col md:flex-row items-center justify-center md:justify-start gap-1 md:gap-3 py-2 md:py-3.5 px-1 md:px-4 rounded-xl font-bold transition-all cursor-pointer ${
                 activeTab === "reportes"
-                  ? "bg-indigo-50 text-indigo-700 shadow-sm"
+                  ? "bg-yellow-50 text-yellow-700 shadow-sm"
                   : "text-slate-500 hover:bg-slate-50"
               }`}
             >
@@ -1552,7 +1820,7 @@ export default function App() {
           <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm hidden md:flex flex-col gap-3">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Hoy</h3>
             <div className="flex items-center gap-2">
-              <div className="bg-indigo-50 text-indigo-600 p-2 rounded-xl">
+              <div className="bg-yellow-50 text-yellow-600 p-2 rounded-xl">
                 <DollarSign className="w-5 h-5" />
               </div>
               <div>
@@ -1583,7 +1851,7 @@ export default function App() {
                 <div className="bg-white p-5 rounded-3xl shadow-sm border border-slate-200/80 flex flex-col gap-4">
 
                   {/* Search + cámara */}
-                  <div className="flex gap-2">
+                  <div id="tour-search" className="flex gap-2">
                     <div className="relative flex-1">
                       <Search className="absolute left-3.5 top-3.5 text-slate-400 w-5 h-5" />
                       <input
@@ -1591,7 +1859,7 @@ export default function App() {
                         value={searchTerm}
                         onChange={(e) => setSearchTerm(e.target.value)}
                         placeholder="Buscar producto por nombre..."
-                        className="w-full bg-slate-50 py-3 pl-11 pr-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
+                        className="w-full bg-slate-50 py-3 pl-11 pr-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 transition"
                       />
                     </div>
                     <div className="relative shrink-0">
@@ -1604,7 +1872,7 @@ export default function App() {
                           }
                         }}
                         disabled={isScanningCartPhoto}
-                        className={`w-12 h-12 text-white rounded-xl flex items-center justify-center shadow-sm transition ${isScanningCartPhoto ? 'bg-indigo-400 cursor-wait' : 'bg-indigo-600 hover:bg-indigo-500 cursor-pointer'}`}
+                        className={`w-12 h-12 rounded-xl flex items-center justify-center shadow-sm transition ${isScanningCartPhoto ? 'bg-slate-400 text-white cursor-wait' : 'bg-yellow-400 text-slate-900 hover:bg-yellow-300 cursor-pointer'}`}
                         title="Escanear código con cámara"
                       >
                         {isScanningCartPhoto
@@ -1622,9 +1890,30 @@ export default function App() {
                     </div>
                   </div>
 
+                  {/* Input pistola USB */}
+                  <form id="tour-barcode" onSubmit={handleBarcodeSearchSubmit} className="flex gap-2">
+                    <div className="relative flex-1">
+                      <Barcode className="absolute left-3.5 top-3 text-slate-400 w-4 h-4" />
+                      <input
+                        ref={barcodeInputRef}
+                        type="text"
+                        value={barcodeSearch}
+                        onChange={e => setBarcodeSearch(e.target.value)}
+                        placeholder="Pistola / código de barras..."
+                        className="w-full bg-amber-50 border border-amber-200 py-2.5 pl-10 pr-4 rounded-xl text-sm font-mono focus:outline-none focus:ring-2 focus:ring-amber-400 transition placeholder-amber-400"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      className="bg-amber-500 hover:bg-amber-400 text-white px-4 rounded-xl font-bold text-sm transition cursor-pointer shrink-0"
+                    >
+                      ↵
+                    </button>
+                  </form>
+
                   {/* Horizontal Scroll Categories */}
                   <div className="flex gap-1.5 overflow-x-auto pb-1.5 scrollbar-thin">
-                    {categories.map((cat) => (
+                    {allCategories.map((cat) => (
                       <button
                         key={cat}
                         onClick={() => setSelectedCategory(cat)}
@@ -1637,6 +1926,30 @@ export default function App() {
                         {cat}
                       </button>
                     ))}
+                    {showAddCategoryInput ? (
+                      <form
+                        onSubmit={e => { e.preventDefault(); addCategory(newCategoryName); }}
+                        className="flex gap-1 shrink-0"
+                      >
+                        <input
+                          autoFocus
+                          value={newCategoryName}
+                          onChange={e => setNewCategoryName(e.target.value)}
+                          placeholder="Nueva categoría"
+                          className="py-1.5 px-3 rounded-full border border-slate-300 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-slate-400 w-36"
+                          onBlur={() => { if (!newCategoryName.trim()) setShowAddCategoryInput(false); }}
+                        />
+                        <button type="submit" className="py-1.5 px-3 rounded-full bg-slate-800 text-white font-bold text-xs shrink-0 cursor-pointer">+</button>
+                      </form>
+                    ) : (
+                      <button
+                        onClick={() => setShowAddCategoryInput(true)}
+                        className="py-1.5 px-3 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 font-bold text-xs shrink-0 cursor-pointer transition"
+                        title="Crear categoría"
+                      >
+                        + Categoría
+                      </button>
+                    )}
                   </div>
 
                   {/* Catalog list — 2 columnas, ordenado por más vendido */}
@@ -1652,27 +1965,28 @@ export default function App() {
                       .sort((a, b) => (saleCount[b.id] || 0) - (saleCount[a.id] || 0));
 
                     return (
-                      <div className="grid grid-cols-2 gap-3 overflow-y-auto pr-1">
+                      <div id="tour-catalog" className="grid grid-cols-2 gap-3 overflow-y-auto pr-1">
                         {filtered.map((product) => {
                           const isLow = product.stock <= product.stockMinimo;
                           return (
                             <button
                               key={product.id}
                               onClick={() => addToCart(product)}
-                              className="bg-slate-50 border border-slate-200 hover:bg-indigo-50 hover:border-indigo-300 rounded-2xl p-4 text-left transition flex flex-col justify-between gap-3 relative cursor-pointer active:scale-95"
+                              className="bg-white border border-slate-200 hover:border-yellow-400 hover:shadow-md rounded-2xl text-left transition-all flex flex-col cursor-pointer active:scale-[0.97] overflow-hidden group"
                             >
-                              <div>
-                                <div className="text-xs text-slate-400 font-medium mb-0.5">{product.categoria}</div>
-                                <h3 className="font-bold text-slate-800 text-sm leading-tight line-clamp-2 pr-6">{product.nombre}</h3>
+                              {/* Top content */}
+                              <div className="p-3 flex-1 flex flex-col gap-1">
+                                <span className={`self-start text-[10px] font-bold px-2 py-0.5 rounded-full ${isLow ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>
+                                  {isLow ? `⚠ ${product.stock}` : product.stock}{product.unidadMedida === 'kg' ? ' kg' : isLow ? '' : ' un.'}
+                                </span>
+                                <h3 className="font-bold text-slate-800 text-sm leading-tight line-clamp-2 mt-0.5">{product.nombre}</h3>
                               </div>
-                              <div className="flex justify-between items-end">
-                                <span className="font-mono font-extrabold text-indigo-700 text-xl md:text-2xl">${product.precioVenta.toLocaleString("es-CL")}</span>
-                                <div className={`text-xs md:text-sm px-2 md:px-3 py-1 rounded-full font-bold ${isLow ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}`}>
-                                  {product.stock}{product.unidadMedida === 'kg' ? ' kg' : ''}
+                              {/* Price + add button row */}
+                              <div className="flex items-center justify-between px-3 pb-3 gap-2">
+                                <span className="font-mono font-extrabold text-slate-900 text-lg md:text-xl leading-none">${product.precioVenta.toLocaleString("es-CL")}</span>
+                                <div className="bg-yellow-400 group-hover:bg-yellow-300 rounded-xl p-2 text-slate-900 shadow-sm transition-colors shrink-0">
+                                  <Plus className="w-5 h-5" />
                                 </div>
-                              </div>
-                              <div className="absolute top-2.5 right-2.5 bg-indigo-500 rounded-lg p-1.5 text-white shadow-sm">
-                                <Plus className="w-4 h-4" />
                               </div>
                             </button>
                           );
@@ -1682,10 +1996,10 @@ export default function App() {
                   })()}
 
                   {/* Modo avanzado: venta rápida por texto */}
-                  <div className="border-t border-slate-100 pt-3">
+                  <div id="tour-modo-avanzado" className="border-t border-slate-100 pt-3">
                     <button
                       onClick={() => setShowVentaRapida(v => !v)}
-                      className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-indigo-600 transition cursor-pointer"
+                      className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-yellow-600 transition cursor-pointer"
                     >
                       <Sparkles className="w-3.5 h-3.5" />
                       <span>{showVentaRapida ? 'Ocultar modo avanzado' : 'Modo avanzado: registrar venta por texto'}</span>
@@ -1720,12 +2034,12 @@ export default function App() {
                             onChange={(e) => setVoiceCommandText(e.target.value)}
                             onKeyDown={(e) => e.key === 'Enter' && !isAnalyzing && voiceCommandText.trim() && analyzeVoiceCommand()}
                             placeholder="Ej: dos marraquetas y una leche..."
-                            className="flex-1 bg-slate-950 py-3 px-4 rounded-2xl text-white placeholder-slate-500 font-medium text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 transition"
+                            className="flex-1 bg-slate-950 py-3 px-4 rounded-2xl text-white placeholder-slate-500 font-medium text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 transition"
                           />
                           <button
                             onClick={analyzeVoiceCommand}
                             disabled={isAnalyzing || !voiceCommandText.trim()}
-                            className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white py-3 px-5 font-extrabold rounded-2xl transition cursor-pointer shrink-0"
+                            className="bg-yellow-400 hover:bg-yellow-300 disabled:opacity-40 text-white py-3 px-5 font-extrabold rounded-2xl transition cursor-pointer shrink-0"
                           >
                             {isAnalyzing ? "..." : "Listo"}
                           </button>
@@ -1748,7 +2062,7 @@ export default function App() {
                             <div className="flex flex-col gap-1">
                               {analysisResult.items?.map((it, idx) => (
                                 <div key={idx} className="flex items-center gap-2 text-sm text-white">
-                                  <span className="bg-indigo-700 text-indigo-100 font-bold px-2 py-0.5 rounded-lg text-xs">{it.cantidad}</span>
+                                  <span className="bg-yellow-500 text-slate-900 font-bold px-2 py-0.5 rounded-lg text-xs">{it.cantidad}</span>
                                   <span>{it.nombre}</span>
                                 </div>
                               ))}
@@ -1760,7 +2074,7 @@ export default function App() {
                             </div>
                             <button
                               onClick={applyDictationResult}
-                              className="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 font-bold rounded-xl transition cursor-pointer text-sm"
+                              className="w-full bg-yellow-400 hover:bg-yellow-300 text-white py-2.5 font-bold rounded-xl transition cursor-pointer text-sm"
                             >
                               Sí, agregar a la boleta
                             </button>
@@ -1774,13 +2088,13 @@ export default function App() {
               </div>
 
               {/* Right side cart checkout pane */}
-              <div className="col-span-1 lg:col-span-7">
+              <div id="tour-boleta" className="col-span-1 lg:col-span-7">
                 <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200/80 flex flex-col gap-5 sticky top-4">
                   <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
-                    <ShoppingCart className="w-6 h-6 text-indigo-600" />
+                    <ShoppingCart className="w-6 h-6 text-yellow-600" />
                     <h2 className="font-bold text-xl text-slate-800">Boleta</h2>
                     {cart.length > 0 && (
-                      <span className="bg-indigo-100 text-indigo-800 text-sm px-3 py-0.5 rounded-full font-bold ml-auto">
+                      <span className="bg-yellow-100 text-yellow-800 text-sm px-3 py-0.5 rounded-full font-bold ml-auto">
                         {cart.length} ítems
                       </span>
                     )}
@@ -1849,7 +2163,7 @@ export default function App() {
                           onClick={() => setPaymentMethod(met)}
                           className={`py-3 px-2 text-center rounded-2xl font-bold text-sm cursor-pointer transition ${
                             paymentMethod === met
-                              ? "bg-indigo-100 border-2 border-indigo-600 text-indigo-800"
+                              ? "bg-yellow-100 border-2 border-yellow-500 text-yellow-900"
                               : "bg-slate-100 border border-slate-200 text-slate-500 hover:bg-slate-200"
                           }`}
                         >
@@ -1871,7 +2185,7 @@ export default function App() {
                           value={cashAmount}
                           onChange={e => setCashAmount(e.target.value)}
                           placeholder="0"
-                          className="w-full pl-7 pr-3 py-2.5 border border-slate-200 rounded-xl text-sm font-mono font-bold text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                          className="w-full pl-7 pr-3 py-2.5 border border-slate-200 rounded-xl text-sm font-mono font-bold text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-yellow-400"
                         />
                       </div>
                       {cashAmount !== "" && Number(cashAmount) >= cartTotal && (
@@ -1897,11 +2211,54 @@ export default function App() {
                   <div className="hidden md:flex bg-slate-50 border border-slate-200/50 p-5 rounded-2xl flex-col gap-2">
                     <div className="flex justify-between items-center text-slate-400 font-medium text-sm">
                       <span>Subtotal</span>
-                      <span>${cartTotal.toLocaleString("es-CL")}</span>
+                      <span>${cartSubtotal.toLocaleString("es-CL")}</span>
                     </div>
+
+                    {/* Descuento */}
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm text-slate-400 font-medium">Descuento</span>
+                      <div className="flex items-center gap-2">
+                        {[0, 5, 10, 15, 20].map(pct => (
+                          <button
+                            key={pct}
+                            onClick={() => setDiscountPct(pct)}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                              discountPct === pct
+                                ? 'bg-yellow-400 text-slate-900'
+                                : 'bg-slate-200 text-slate-600 hover:bg-slate-300'
+                            }`}
+                          >
+                            {pct === 0 ? 'Sin desc.' : `${pct}%`}
+                          </button>
+                        ))}
+                        <div className="flex items-center bg-slate-100 rounded-lg overflow-hidden border border-slate-200 focus-within:border-yellow-400 transition">
+                          <input
+                            type="number"
+                            min="0"
+                            max="100"
+                            value={discountPct === 0 ? '' : discountPct}
+                            onChange={e => {
+                              const v = Math.min(100, Math.max(0, Number(e.target.value)));
+                              setDiscountPct(isNaN(v) ? 0 : v);
+                            }}
+                            placeholder="0"
+                            className="w-10 py-1 pl-2 pr-0 text-xs font-bold bg-transparent text-slate-700 focus:outline-none"
+                          />
+                          <span className="text-xs text-slate-400 font-bold pr-1.5">%</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {discountPct > 0 && (
+                      <div className="flex justify-between items-center text-emerald-600 text-sm font-medium">
+                        <span>Ahorro ({discountPct}%)</span>
+                        <span>-${discountAmount.toLocaleString("es-CL")}</span>
+                      </div>
+                    )}
+
                     <div className="flex justify-between items-center pt-2 text-slate-800 border-t border-slate-200/60">
                       <span className="font-extrabold text-lg">Total a Cobrar</span>
-                      <span className="font-mono font-extrabold text-2xl text-indigo-700">${cartTotal.toLocaleString("es-CL")}</span>
+                      <span className="font-mono font-extrabold text-2xl text-yellow-700">${cartTotal.toLocaleString("es-CL")}</span>
                     </div>
                   </div>
 
@@ -1909,11 +2266,31 @@ export default function App() {
                   <button
                     onClick={checkoutSale}
                     disabled={cart.length === 0}
-                    className="hidden md:flex w-full py-5 bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white font-extrabold text-xl rounded-2xl shadow-md disabled:opacity-40 disabled:hover:bg-indigo-600 cursor-pointer transition items-center justify-center gap-3"
+                    className="hidden md:flex w-full py-5 bg-yellow-400 hover:bg-yellow-300 active:scale-95 text-slate-900 font-extrabold text-xl rounded-2xl shadow-md disabled:opacity-40 disabled:hover:bg-yellow-400 cursor-pointer transition items-center justify-center gap-3"
                   >
                     <CheckCircle className="w-6 h-6" />
                     <span>Confirmar Venta</span>
                   </button>
+
+                  {/* Estado post-venta desktop */}
+                  {lastSale && cart.length === 0 && (
+                    <div className="hidden md:flex flex-col gap-2">
+                      <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 rounded-2xl px-4 py-3">
+                        <CheckCircle className="w-5 h-5 text-emerald-500 shrink-0" />
+                        <div className="min-w-0">
+                          <p className="font-bold text-emerald-800 text-sm">Venta completada</p>
+                          <p className="text-emerald-600 text-xs">${lastSale.total.toLocaleString('es-CL')} · {lastSale.metodoPago}</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => printReceipt(lastSale)}
+                        className="flex w-full py-3 bg-slate-800 hover:bg-slate-700 active:scale-95 text-white font-bold text-sm rounded-2xl cursor-pointer transition items-center justify-center gap-2"
+                      >
+                        <Printer className="w-4 h-4" />
+                        <span>Imprimir boleta</span>
+                      </button>
+                    </div>
+                  )}
 
                 </div>
               </div>
@@ -1937,15 +2314,17 @@ export default function App() {
 
                 <div className="flex items-center gap-2">
                   <button
+                    id="tour-inv-foto"
                     onClick={() => setShowAiPhotoModal(true)}
-                    className="py-2.5 px-4 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold text-sm rounded-xl border border-indigo-200 transition flex items-center gap-2 cursor-pointer shadow-sm"
+                    className="py-2.5 px-4 bg-yellow-50 hover:bg-yellow-100 text-yellow-700 font-bold text-sm rounded-xl border border-yellow-200 transition flex items-center gap-2 cursor-pointer shadow-sm"
                   >
                     <Barcode className="w-4 h-4" />
                     <span>Foto</span>
                   </button>
                   <button
+                    id="tour-inv-nuevo"
                     onClick={() => setShowAddProductModal(true)}
-                    className="py-2.5 px-4 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm rounded-xl shadow-sm transition flex items-center gap-2 cursor-pointer"
+                    className="py-2.5 px-4 bg-yellow-400 hover:bg-yellow-300 text-slate-900 font-bold text-sm rounded-xl shadow-sm transition flex items-center gap-2 cursor-pointer"
                   >
                     <Plus className="w-4 h-4" />
                     <span>Nuevo</span>
@@ -1962,30 +2341,104 @@ export default function App() {
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
                     placeholder="Buscar producto..."
-                    className="w-full bg-slate-50 py-3 pl-9 pr-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
+                    className="w-full bg-slate-50 py-3 pl-9 pr-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 transition"
                   />
                 </div>
                 <div className="col-span-1 sm:col-span-6 flex gap-2">
                   <select
                     value={selectedCategory}
                     onChange={(e) => setSelectedCategory(e.target.value)}
-                    className="flex-1 bg-slate-50 py-3 px-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="flex-1 bg-slate-50 py-3 px-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
                   >
                     <option value="Todos">Todas las categorías</option>
-                    {categories.filter(c => c !== "Todos").map(cat => (
+                    {allCategories.filter(c => c !== "Todos").map(cat => (
                       <option key={cat} value={cat}>{cat}</option>
                     ))}
                   </select>
+                  {showAddCategoryInput ? (
+                    <form onSubmit={e => { e.preventDefault(); addCategory(newCategoryName); }} className="flex gap-1">
+                      <input
+                        autoFocus
+                        value={newCategoryName}
+                        onChange={e => setNewCategoryName(e.target.value)}
+                        placeholder="Nueva categoría"
+                        className="py-3 px-3 rounded-xl border border-slate-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-yellow-400 w-40"
+                        onBlur={() => { if (!newCategoryName.trim()) setShowAddCategoryInput(false); }}
+                      />
+                      <button type="submit" className="bg-slate-800 text-white px-4 rounded-xl font-bold text-sm cursor-pointer shrink-0">+</button>
+                    </form>
+                  ) : (
+                    <button
+                      onClick={() => setShowAddCategoryInput(true)}
+                      className="bg-slate-100 hover:bg-slate-200 text-slate-600 px-4 rounded-xl font-bold text-sm cursor-pointer shrink-0 transition"
+                      title="Crear categoría"
+                    >
+                      + Cat
+                    </button>
+                  )}
                 </div>
               </div>
 
-              {/* Tabla */}
-              <div className="overflow-x-auto">
+              {/* Vista mobile: lista de tarjetas */}
+              <div className="flex flex-col divide-y divide-slate-100 sm:hidden">
+                {products
+                  .filter(p => selectedCategory === "Todos" || p.categoria === selectedCategory)
+                  .filter(p => p.nombre.toLowerCase().includes(searchTerm.toLowerCase()) || (p.codigoBarras && p.codigoBarras.includes(searchTerm)))
+                  .map((product) => {
+                    const isLow = product.stock <= product.stockMinimo;
+                    const markup = product.precioCompra > 0
+                      ? Math.round(((product.precioVenta - product.precioCompra) / product.precioCompra) * 100)
+                      : 0;
+                    return (
+                      <div key={product.id} className="py-3.5 flex items-center gap-3 hover:bg-slate-50/60 transition -mx-2 px-2 rounded-xl">
+                        <div className={`shrink-0 flex flex-col items-center justify-center w-12 h-12 rounded-xl font-bold font-mono ${
+                          isLow ? "bg-rose-100 text-rose-700 border border-rose-200" : "bg-emerald-50 text-emerald-700"
+                        }`}>
+                          <span className="text-base leading-none">{product.stock}</span>
+                          <span className="text-[9px] font-semibold opacity-70">{product.unidadMedida === 'kg' ? 'kg' : 'uds'}</span>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="font-bold text-slate-800 text-sm leading-snug truncate">{product.nombre}</div>
+                          <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-semibold">{product.categoria}</span>
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <div className="font-mono font-extrabold text-slate-800 text-sm">${product.precioVenta.toLocaleString("es-CL")}</div>
+                          {markup > 0 && <div className="text-[10px] text-emerald-600 font-bold">+{markup}%</div>}
+                        </div>
+                        <div className="shrink-0 flex items-center gap-1">
+                          <button
+                            onClick={() => {
+                              setShowEditStockModal(product);
+                              setEditForm({
+                                nombre: product.nombre, codigoBarras: product.codigoBarras || "",
+                                categoria: product.categoria, precioCompra: String(product.precioCompra),
+                                precioVenta: String(product.precioVenta), stock: String(product.stock),
+                                stockMinimo: String(product.stockMinimo), unidadMedida: product.unidadMedida,
+                              });
+                            }}
+                            className="p-2 hover:bg-yellow-50 rounded-xl text-slate-400 hover:text-yellow-600 transition cursor-pointer"
+                          >
+                            <Edit3 className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteProduct(product.id)}
+                            className="p-2 hover:bg-rose-50 rounded-xl text-slate-400 hover:text-rose-500 transition cursor-pointer"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+
+              {/* Vista desktop: tabla original */}
+              <div className="hidden sm:block overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="border-b-2 border-slate-100 text-slate-400 text-xs font-bold uppercase tracking-wide">
                       <th className="py-3 px-2">Producto</th>
-                      <th className="py-3 px-2 hidden sm:table-cell">Costo</th>
+                      <th className="py-3 px-2">Costo</th>
                       <th className="py-3 px-2">Precio venta</th>
                       <th className="py-3 px-2 text-center">Stock</th>
                       <th className="py-3 px-2 text-right"></th>
@@ -2013,7 +2466,7 @@ export default function App() {
                                 )}
                               </div>
                             </td>
-                            <td className="py-4 px-2 font-mono text-sm text-slate-500 hidden sm:table-cell">
+                            <td className="py-4 px-2 font-mono text-sm text-slate-500">
                               ${product.precioCompra.toLocaleString("es-CL")}
                             </td>
                             <td className="py-4 px-2">
@@ -2024,9 +2477,7 @@ export default function App() {
                             </td>
                             <td className="py-4 px-2 text-center">
                               <span className={`font-bold font-mono text-sm px-3 py-1.5 rounded-full ${
-                                isLow
-                                  ? "bg-rose-100 text-rose-800 border border-rose-200 animate-pulse"
-                                  : "bg-emerald-50 text-emerald-800"
+                                isLow ? "bg-rose-100 text-rose-800 border border-rose-200 animate-pulse" : "bg-emerald-50 text-emerald-800"
                               }`}>
                                 {product.stock} {product.unidadMedida === 'kg' ? 'kg' : 'uds'}
                               </span>
@@ -2037,25 +2488,19 @@ export default function App() {
                                   onClick={() => {
                                     setShowEditStockModal(product);
                                     setEditForm({
-                                      nombre: product.nombre,
-                                      codigoBarras: product.codigoBarras || "",
-                                      categoria: product.categoria,
-                                      precioCompra: String(product.precioCompra),
-                                      precioVenta: String(product.precioVenta),
-                                      stock: String(product.stock),
-                                      stockMinimo: String(product.stockMinimo),
-                                      unidadMedida: product.unidadMedida,
+                                      nombre: product.nombre, codigoBarras: product.codigoBarras || "",
+                                      categoria: product.categoria, precioCompra: String(product.precioCompra),
+                                      precioVenta: String(product.precioVenta), stock: String(product.stock),
+                                      stockMinimo: String(product.stockMinimo), unidadMedida: product.unidadMedida,
                                     });
                                   }}
-                                  className="p-2 hover:bg-slate-100 rounded-xl text-slate-500 hover:text-indigo-600 transition cursor-pointer"
-                                  title="Editar"
+                                  className="p-2 hover:bg-slate-100 rounded-xl text-slate-500 hover:text-yellow-600 transition cursor-pointer"
                                 >
                                   <Edit3 className="w-5 h-5" />
                                 </button>
                                 <button
                                   onClick={() => handleDeleteProduct(product.id)}
                                   className="p-2 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-rose-600 transition cursor-pointer"
-                                  title="Eliminar"
                                 >
                                   <Trash2 className="w-5 h-5" />
                                 </button>
@@ -2088,20 +2533,78 @@ export default function App() {
                 </div>
                 <div className="flex flex-col items-end gap-0.5">
                   <span className="text-xs text-slate-400 uppercase font-bold">Total acumulado</span>
-                  <span className="text-2xl font-black font-mono text-indigo-700">
+                  <span className="text-2xl font-black font-mono text-yellow-700">
                     ${sales.reduce((s, v) => s + v.total, 0).toLocaleString("es-CL")}
                   </span>
                 </div>
               </div>
 
-              {sales.length === 0 ? (
-                <div className="py-16 flex flex-col items-center text-slate-300 gap-3">
-                  <Receipt className="w-14 h-14" />
-                  <p className="text-base text-slate-400">Aún no hay ventas registradas</p>
-                </div>
-              ) : (
-                <div className="flex flex-col gap-3 max-h-[65vh] overflow-y-auto pr-1">
-                  {sales.map((sale) => {
+              {/* Filtros de fecha */}
+              <div className="flex gap-2 flex-wrap">
+                {([
+                  { key: "all",       label: "Todas" },
+                  { key: "today",     label: "Hoy" },
+                  { key: "yesterday", label: "Ayer" },
+                  { key: "week",      label: "Esta semana" },
+                  { key: "month",     label: "Este mes" },
+                ] as const).map(f => (
+                  <button
+                    key={f.key}
+                    onClick={() => setSalesFilter(f.key)}
+                    className={`px-3.5 py-1.5 rounded-full text-xs font-bold transition cursor-pointer ${
+                      salesFilter === f.key
+                        ? 'bg-yellow-400 text-slate-900'
+                        : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+
+              {(() => {
+                const now = new Date();
+                const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+                const filtered = sales.filter(sale => {
+                  const d = new Date(sale.fecha);
+                  if (salesFilter === "today") return d.toDateString() === now.toDateString();
+                  if (salesFilter === "yesterday") return d.toDateString() === yesterday.toDateString();
+                  if (salesFilter === "week") {
+                    const start = new Date(now); start.setDate(now.getDate() - now.getDay() + (now.getDay() === 0 ? -6 : 1)); start.setHours(0,0,0,0);
+                    return d >= start;
+                  }
+                  if (salesFilter === "month") return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+                  return true;
+                });
+                const filterTotal = filtered.reduce((s, sale) => s + sale.total, 0);
+                const filterLabel = { all: "en total", today: "hoy", yesterday: "ayer", week: "esta semana", month: "este mes" }[salesFilter];
+                return (
+                  <>
+                    {salesFilter !== "all" && filtered.length > 0 && (
+                      <div className="flex items-center justify-between bg-yellow-50 border border-yellow-200 rounded-2xl px-4 py-3">
+                        <div>
+                          <p className="text-xs text-yellow-700 font-semibold uppercase tracking-wide">Total vendido {filterLabel}</p>
+                          <p className="font-extrabold text-2xl text-slate-800 font-mono">${filterTotal.toLocaleString('es-CL')}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-xs text-slate-400 font-semibold">{filtered.length} venta{filtered.length !== 1 ? 's' : ''}</p>
+                          <p className="text-xs text-slate-400">{filtered.reduce((s, sale) => s + sale.items.reduce((si, i) => si + i.cantidad, 0), 0)} productos</p>
+                        </div>
+                      </div>
+                    )}
+                    {sales.length === 0 ? (
+                      <div className="py-16 flex flex-col items-center text-slate-300 gap-3">
+                        <Receipt className="w-14 h-14" />
+                        <p className="text-base text-slate-400">Aún no hay ventas registradas</p>
+                      </div>
+                    ) : filtered.length === 0 ? (
+                      <div className="py-10 flex flex-col items-center text-slate-300 gap-2">
+                        <Receipt className="w-10 h-10" />
+                        <p className="text-sm text-slate-400">Sin ventas {filterLabel}</p>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col gap-3 max-h-[65vh] overflow-y-auto pr-1">
+                        {filtered.map((sale) => {
                     const date = new Date(sale.fecha);
                     const today = new Date();
                     const isToday = date.toDateString() === today.toDateString();
@@ -2110,7 +2613,7 @@ export default function App() {
                       : date.toLocaleDateString("es-CL", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 
                     const metodoPagoColor: Record<string, string> = {
-                      Efectivo: "bg-indigo-100 text-indigo-800",
+                      Efectivo: "bg-yellow-100 text-yellow-800",
                       Débito: "bg-blue-100 text-blue-800",
                       Crédito: "bg-purple-100 text-purple-800",
                       Transferencia: "bg-amber-100 text-amber-800",
@@ -2129,6 +2632,13 @@ export default function App() {
                           <div className="flex items-center gap-2 shrink-0">
                             <span className="font-black font-mono text-slate-800 text-lg">${sale.total.toLocaleString("es-CL")}</span>
                             <button
+                              onClick={() => printReceipt(sale)}
+                              className="p-1.5 rounded-xl text-slate-400 hover:text-yellow-600 hover:bg-yellow-50 transition cursor-pointer"
+                              title="Imprimir boleta"
+                            >
+                              <Printer className="w-4 h-4" />
+                            </button>
+                            <button
                               onClick={() => handleDeleteSale(sale.id)}
                               className="p-1.5 rounded-xl text-slate-400 hover:text-red-500 hover:bg-red-50 transition cursor-pointer"
                             >
@@ -2146,10 +2656,13 @@ export default function App() {
                           ))}
                         </ul>
                       </div>
-                    );
-                  })}
-                </div>
-              )}
+                        );
+                        })}
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </motion.div>
           )}
 
@@ -2163,16 +2676,16 @@ export default function App() {
             >
 
               {/* 1. HÉROE — Resumen de hoy */}
-              <div className="bg-indigo-600 rounded-3xl p-6 text-white">
+              <div className="bg-slate-900 rounded-3xl p-6 text-white">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="text-indigo-200 text-base font-semibold capitalize">
+                    <p className="text-slate-400 text-base font-semibold capitalize">
                       {new Date().toLocaleDateString('es-CL', { weekday: 'long', day: 'numeric', month: 'long' })}
                     </p>
-                    <p className="text-5xl font-black font-mono mt-2 leading-none">
+                    <p className="text-5xl font-black font-mono mt-2 leading-none text-yellow-400">
                       ${todaySalesSum.toLocaleString('es-CL')}
                     </p>
-                    <p className="text-indigo-200 text-base mt-3">
+                    <p className="text-slate-400 text-base mt-3">
                       {todaySales.length === 0
                         ? 'Sin ventas hoy todavía'
                         : `${todaySales.length} venta${todaySales.length !== 1 ? 's' : ''} · ganancia est. $${estimatedProfitToday.toLocaleString('es-CL')}`}
@@ -2181,7 +2694,7 @@ export default function App() {
                   <button
                     onClick={handleShareDailySummary}
                     disabled={todaySales.length === 0}
-                    className="flex items-center gap-1.5 py-2 px-3 bg-white/20 hover:bg-white/30 text-white font-bold text-xs rounded-xl transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                    className="flex items-center gap-1.5 py-2 px-3 bg-yellow-400 hover:bg-yellow-300 text-slate-900 font-bold text-xs rounded-xl transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
                   >
                     <Share2 className="w-3.5 h-3.5" />
                     <span>Compartir</span>
@@ -2189,7 +2702,7 @@ export default function App() {
                 </div>
 
                 {/* Comparación vs ayer */}
-                <div className="mt-5 bg-white/10 rounded-2xl px-5 py-4 flex items-center gap-4">
+                <div className="mt-5 bg-white/5 rounded-2xl px-5 py-4 flex items-center gap-4">
                   {todayVsYesterdayPct !== null ? (
                     <>
                       <span className="text-3xl">{todayVsYesterdayPct >= 0 ? '↑' : '↓'}</span>
@@ -2199,7 +2712,7 @@ export default function App() {
                             ? `${todayVsYesterdayPct}% más que ayer`
                             : `${Math.abs(todayVsYesterdayPct)}% menos que ayer`}
                         </p>
-                        <p className="text-indigo-200 text-sm mt-0.5">
+                        <p className="text-slate-400 text-sm mt-0.5">
                           Ayer: ${yesterdaySalesSum.toLocaleString('es-CL')} · diferencia: {todayVsYesterdayDiff >= 0 ? '+' : ''}${todayVsYesterdayDiff.toLocaleString('es-CL')}
                         </p>
                       </div>
@@ -2207,7 +2720,7 @@ export default function App() {
                   ) : (
                     <>
                       <span className="text-3xl">📊</span>
-                      <p className="text-base text-indigo-100 font-medium">
+                      <p className="text-base text-slate-400 font-medium">
                         {todaySalesSum > 0 ? 'Aún no hay datos de ayer para comparar.' : 'Registra tu primera venta del día.'}
                       </p>
                     </>
@@ -2237,11 +2750,11 @@ export default function App() {
                             <div className="flex-1 min-w-0">
                               <div className="flex justify-between items-baseline gap-2 mb-2">
                                 <span className="font-bold text-slate-800 text-base leading-tight truncate">{p.nombre}</span>
-                                <span className="text-base font-black text-indigo-700 font-mono shrink-0">{p.cantidad} uds</span>
+                                <span className="text-base font-black text-yellow-700 font-mono shrink-0">{p.cantidad} uds</span>
                               </div>
                               <div className="w-full bg-slate-100 h-3 rounded-full">
                                 <div
-                                  className="bg-indigo-500 h-full rounded-full transition-all duration-500"
+                                  className="bg-yellow-400 h-full rounded-full transition-all duration-500"
                                   style={{ width: `${Math.round((p.cantidad / maxQ) * 100)}%` }}
                                 />
                               </div>
@@ -2272,11 +2785,11 @@ export default function App() {
                             <div className="flex-1 min-w-0">
                               <div className="flex justify-between items-baseline gap-2 mb-2">
                                 <span className="font-bold text-slate-800 text-base leading-tight truncate">{p.nombre}</span>
-                                <span className="text-base font-black text-indigo-700 font-mono shrink-0">{p.cantidad} uds</span>
+                                <span className="text-base font-black text-yellow-700 font-mono shrink-0">{p.cantidad} uds</span>
                               </div>
                               <div className="w-full bg-slate-100 h-3 rounded-full">
                                 <div
-                                  className="bg-indigo-500 h-full rounded-full transition-all duration-500"
+                                  className="bg-yellow-400 h-full rounded-full transition-all duration-500"
                                   style={{ width: `${Math.round((p.cantidad / maxQ) * 100)}%` }}
                                 />
                               </div>
@@ -2327,7 +2840,7 @@ export default function App() {
                         : (thisWeekTotal > 0 ? 'Sin datos de la semana pasada aún' : 'Sin ventas esta semana')}
                     </p>
                   </div>
-                  <span className="text-2xl font-black font-mono text-indigo-700 shrink-0">
+                  <span className="text-2xl font-black font-mono text-yellow-700 shrink-0">
                     ${thisWeekTotal.toLocaleString('es-CL')}
                   </span>
                 </div>
@@ -2346,18 +2859,18 @@ export default function App() {
                         )}
                         <div className="w-full flex items-end flex-1">
                           <div
-                            className={`w-full rounded-t-xl transition-all duration-500 ${isToday ? 'bg-indigo-500' : 'bg-indigo-200'}`}
+                            className={`w-full rounded-t-xl transition-all duration-500 ${isToday ? 'bg-yellow-500' : 'bg-yellow-200'}`}
                             style={{ height: `${Math.max(h, thisWeekByDay[i] > 0 ? 6 : 0)}%` }}
                           />
                         </div>
-                        <span className={`text-xs font-bold ${isToday ? 'text-indigo-600' : 'text-slate-400'}`}>{day}</span>
+                        <span className={`text-xs font-bold ${isToday ? 'text-yellow-600' : 'text-slate-400'}`}>{day}</span>
                       </div>
                     );
                   })}
                 </div>
                 <div className="flex items-center gap-4 text-sm text-slate-400">
-                  <div className="flex items-center gap-2"><div className="w-4 h-4 rounded bg-indigo-500" /><span>Hoy</span></div>
-                  <div className="flex items-center gap-2"><div className="w-4 h-4 rounded bg-indigo-200" /><span>Otros días</span></div>
+                  <div className="flex items-center gap-2"><div className="w-4 h-4 rounded bg-yellow-500" /><span>Hoy</span></div>
+                  <div className="flex items-center gap-2"><div className="w-4 h-4 rounded bg-yellow-200" /><span>Otros días</span></div>
                 </div>
               </div>
 
@@ -2371,7 +2884,7 @@ export default function App() {
       {/* Mobile sticky cart bar — visible only on mobile when cart has items in Caja tab */}
       {cart.length > 0 && activeTab === "caja" && (
         <div className="fixed bottom-0 left-0 right-0 z-40 md:hidden animate-fade-in">
-          <div className="mx-3 mb-3 bg-indigo-600 rounded-2xl shadow-2xl overflow-hidden">
+          <div className="mx-3 mb-3 bg-slate-900 rounded-2xl shadow-2xl overflow-hidden">
             {/* Payment method pills */}
             <div className="flex gap-1.5 px-4 pt-3 pb-2">
               {(["Efectivo", "Débito", "Crédito", "Transferencia"] as const).map((met) => (
@@ -2380,8 +2893,8 @@ export default function App() {
                   onClick={() => setPaymentMethod(met)}
                   className={`flex-1 py-1.5 rounded-xl text-[11px] font-bold transition cursor-pointer ${
                     paymentMethod === met
-                      ? "bg-white text-indigo-700"
-                      : "bg-indigo-500/50 text-indigo-200"
+                      ? "bg-yellow-400 text-slate-900"
+                      : "bg-slate-700 text-slate-400"
                   }`}
                 >
                   {met === "Efectivo" ? "💵" : met === "Débito" ? "💳 Déb." : met === "Crédito" ? "💳 Cré." : "📲"}
@@ -2392,7 +2905,7 @@ export default function App() {
             {/* Total + cobrar */}
             <div className="flex items-center justify-between px-4 pb-4 pt-1 gap-3">
               <div>
-                <div className="text-indigo-200 text-xs font-semibold">
+                <div className="text-slate-400 text-xs font-semibold">
                   {cart.reduce((s, i) => s + i.cantidad, 0)} ítem{cart.reduce((s, i) => s + i.cantidad, 0) !== 1 ? "s" : ""}
                 </div>
                 <div className="text-white font-extrabold text-2xl font-mono leading-tight">
@@ -2401,7 +2914,7 @@ export default function App() {
               </div>
               <button
                 onClick={checkoutSale}
-                className="bg-white text-indigo-700 font-extrabold px-6 py-3.5 rounded-xl text-base flex items-center gap-2 shrink-0 active:scale-95 transition cursor-pointer shadow-lg"
+                className="bg-yellow-400 text-slate-900 font-extrabold px-6 py-3.5 rounded-xl text-base flex items-center gap-2 shrink-0 active:scale-95 transition cursor-pointer shadow-lg"
               >
                 <CheckCircle className="w-5 h-5" />
                 Cobrar
@@ -2411,8 +2924,114 @@ export default function App() {
         </div>
       )}
 
+      {/* Mobile bottom navigation bar */}
+      <nav className="fixed bottom-0 left-0 right-0 z-30 md:hidden bg-white border-t border-slate-200/80 shadow-[0_-4px_20px_rgba(0,0,0,0.06)]">
+        <div className="flex items-stretch pb-safe">
+          {([
+            { key: "caja",       label: "Caja",     Icon: ShoppingCart },
+            { key: "inventario", label: "Stock",    Icon: Barcode },
+            { key: "ventas",     label: "Ventas",   Icon: Receipt },
+            { key: "reportes",   label: "Reportes", Icon: TrendingUp },
+          ] as const).map(({ key, label, Icon }) => {
+            const isActive = activeTab === key;
+            const lowStockCount = key === "inventario" ? products.filter(p => p.stock <= p.stockMinimo).length : 0;
+            return (
+              <button
+                key={key}
+                onClick={() => setActiveTab(key)}
+                className={`flex-1 flex flex-col items-center justify-center gap-0.5 py-3 relative transition cursor-pointer ${
+                  isActive ? "text-yellow-600" : "text-slate-400"
+                }`}
+              >
+                {isActive && (
+                  <span className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 bg-yellow-400 rounded-full" />
+                )}
+                <Icon className={`w-5 h-5 ${isActive ? "text-yellow-500" : "text-slate-400"}`} />
+                <span className={`text-[10px] font-bold ${isActive ? "text-yellow-600" : "text-slate-400"}`}>{label}</span>
+                {lowStockCount > 0 && (
+                  <span className="absolute top-2 right-[22%] bg-amber-500 text-white rounded-full text-[8px] w-3.5 h-3.5 flex items-center justify-center font-bold">
+                    {lowStockCount}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </nav>
+
+      {/* Mobile sticky post-sale bar — print button after checkout */}
+      {lastSale && cart.length === 0 && activeTab === "caja" && (
+        <div className="fixed bottom-0 left-0 right-0 z-40 md:hidden animate-fade-in">
+          <div className="mx-3 mb-3 bg-slate-900 rounded-2xl shadow-2xl">
+            <div className="flex items-center justify-between px-4 py-3 gap-3">
+              <div className="flex items-center gap-2 min-w-0">
+                <CheckCircle className="w-5 h-5 text-emerald-400 shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-white font-bold text-sm">Venta completada</p>
+                  <p className="text-slate-400 text-xs">${lastSale.total.toLocaleString('es-CL')} · {lastSale.metodoPago}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => printReceipt(lastSale)}
+                className="bg-yellow-400 text-slate-900 font-bold px-4 py-2.5 rounded-xl text-sm flex items-center gap-2 shrink-0 active:scale-95 transition cursor-pointer"
+              >
+                <Printer className="w-4 h-4" />
+                Boleta
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* FOOTER */}
       {/* --- MODAL DIALOGS --- */}
+
+
+      {/* Modal alerta stock bajo */}
+      {lowStockAlert.length > 0 && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 animate-fade-in">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+          <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden">
+            {/* Header rojo */}
+            <div className="bg-rose-600 px-6 pt-6 pb-8 flex flex-col items-center text-center">
+              <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mb-3">
+                <span className="text-4xl">⚠️</span>
+              </div>
+              <h2 className="text-white font-extrabold text-xl leading-tight">
+                {lowStockAlert.length === 1 ? '¡Queda poco stock!' : `¡${lowStockAlert.length} productos con stock bajo!`}
+              </h2>
+              <p className="text-rose-200 text-sm mt-1">Considera reabastecer pronto</p>
+            </div>
+
+            {/* Lista de productos */}
+            <div className="-mt-4 mx-4 bg-white rounded-2xl shadow-md border border-rose-100 overflow-hidden">
+              {lowStockAlert.map((p, i) => (
+                <div key={i} className={`flex items-center justify-between px-4 py-3 ${i < lowStockAlert.length - 1 ? 'border-b border-slate-100' : ''}`}>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-bold text-slate-800 text-sm truncate">{p.nombre}</p>
+                    <p className="text-xs text-slate-400">Mínimo: {p.stockMinimo} {p.unidadMedida}</p>
+                  </div>
+                  <div className={`shrink-0 ml-3 px-3 py-1.5 rounded-xl font-extrabold font-mono text-sm ${
+                    p.stock === 0 ? 'bg-rose-100 text-rose-700' : 'bg-orange-100 text-orange-700'
+                  }`}>
+                    {p.stock === 0 ? 'Sin stock' : `${p.stock} ${p.unidadMedida}`}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Botón */}
+            <div className="p-4 mt-2">
+              <button
+                onClick={() => setLowStockAlert([])}
+                className="w-full bg-rose-600 hover:bg-rose-500 active:scale-95 text-white font-extrabold py-3.5 rounded-2xl transition cursor-pointer text-base"
+              >
+                Entendido
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL 1: ADD PRODUCT */}
       {showAddProductModal && (
@@ -2446,7 +3065,7 @@ export default function App() {
                     onChange={(e) => setNewProduct({ ...newProduct, categoria: e.target.value })}
                     className="w-full bg-slate-50 p-2.5 rounded-lg border border-slate-200"
                   >
-                    {categories.filter(c => c !== "Todos").map(cat => (
+                    {allCategories.filter(c => c !== "Todos").map(cat => (
                       <option key={cat} value={cat}>{cat}</option>
                     ))}
                   </select>
@@ -2522,7 +3141,7 @@ export default function App() {
 
               <button
                 type="submit"
-                className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 mt-4 rounded-xl cursor-pointer"
+                className="w-full bg-yellow-400 hover:bg-yellow-300 text-white font-bold py-3 mt-4 rounded-xl cursor-pointer"
               >
                 Guardar Producto
               </button>
@@ -2576,8 +3195,8 @@ export default function App() {
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
           <div className="bg-white rounded-3xl p-6 w-full max-w-md shadow-2xl flex flex-col gap-4 max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center pb-2 border-b border-slate-100">
-              <div className="flex items-center gap-1.5 text-indigo-800">
-                <Barcode className="w-5 h-5 text-indigo-600" />
+              <div className="flex items-center gap-1.5 text-slate-800">
+                <Barcode className="w-5 h-5 text-yellow-600" />
                 <h3 className="font-extrabold text-base text-slate-800 font-sans">Registrar con Código de Barras</h3>
               </div>
               <button
@@ -2600,8 +3219,8 @@ export default function App() {
                   <span className="shrink-0 mt-0.5">📸</span>
                   <span><strong>Consejo:</strong> Enfoca solo el código de barras (líneas negras). Que ocupe la mayor parte de la foto. Buena luz, sin reflejo ni sombra.</span>
                 </div>
-                <label className="border-2 border-dashed border-slate-300 rounded-3xl p-8 flex flex-col items-center justify-center gap-3 cursor-pointer hover:border-indigo-400 hover:bg-indigo-50/20 transition duration-200">
-                  <div className="bg-indigo-50 text-indigo-600 p-4 rounded-full">
+                <label className="border-2 border-dashed border-slate-300 rounded-3xl p-8 flex flex-col items-center justify-center gap-3 cursor-pointer hover:border-yellow-400 hover:bg-yellow-50/20 transition duration-200">
+                  <div className="bg-yellow-50 text-yellow-600 p-4 rounded-full">
                     <Camera className="w-8 h-8" />
                   </div>
                   <div className="text-center">
@@ -2651,7 +3270,7 @@ export default function App() {
                   </button>
                   <button
                     onClick={handleAnalyzePhoto}
-                    className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1 shadow-md shadow-indigo-100"
+                    className="flex-1 py-2.5 bg-yellow-400 hover:bg-yellow-300 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1 shadow-md shadow-indigo-100"
                   >
                     <Barcode className="w-4 h-4" />
                     <span>Escanear código de barras</span>
@@ -2664,8 +3283,8 @@ export default function App() {
             {isAnalyzingPhoto && (
               <div className="flex flex-col items-center justify-center py-10 px-4 gap-4 text-center">
                 <div className="relative">
-                  <div className="w-12 h-12 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
-                  <Sparkles className="w-5 h-5 text-indigo-500 absolute top-3.5 left-3.5 animate-pulse" />
+                  <div className="w-12 h-12 border-4 border-yellow-200 border-t-yellow-500 rounded-full animate-spin"></div>
+                  <Sparkles className="w-5 h-5 text-yellow-500 absolute top-3.5 left-3.5 animate-pulse" />
                 </div>
                 <div>
                   <span className="font-sans font-extrabold text-slate-800 text-sm block">Detectando código de barras...</span>
@@ -2723,7 +3342,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => { setShowAiPhotoModal(false); setAiPhotoPreview(null); setAiInventoryMatch(null); setActiveTab('inventario'); }}
-                    className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2.5 rounded-xl text-sm transition cursor-pointer"
+                    className="flex-1 bg-yellow-400 hover:bg-yellow-300 text-white font-bold py-2.5 rounded-xl text-sm transition cursor-pointer"
                   >
                     Ver en inventario
                   </button>
@@ -2740,23 +3359,23 @@ export default function App() {
                     <img src={aiPhotoPreview} alt="Target" className="w-14 h-14 object-cover rounded-xl border border-slate-200" />
                   )}
                   <div className="min-w-0">
-                    <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full uppercase">Identificado</span>
+                    <span className="text-[10px] font-bold text-yellow-600 bg-yellow-50 px-2 py-0.5 rounded-full uppercase">Identificado</span>
                     <h4 className="font-bold text-slate-800 text-xs truncate mt-1">{aiAnalyzedProduct.nombre}</h4>
                     <p className="text-[10px] text-slate-400 truncate leading-tight">{aiAnalyzedProduct.descripcion}</p>
                   </div>
                 </div>
 
                 {/* Characterics recap */}
-                <div className="grid grid-cols-2 gap-2 bg-indigo-50/30 p-3 rounded-xl border border-indigo-100/40">
+                <div className="grid grid-cols-2 gap-2 bg-yellow-50/30 p-3 rounded-xl border border-yellow-100/40">
                   <div>
                     <span className="text-[10px] text-slate-400 font-semibold block uppercase">Categoría</span>
-                    <span className="font-bold text-indigo-900 text-xs">{aiAnalyzedProduct.categoria}</span>
+                    <span className="font-bold text-slate-800 text-xs">{aiAnalyzedProduct.categoria}</span>
                   </div>
                   <div>
                     <span className="text-[10px] text-slate-400 font-semibold block uppercase">U. Medida</span>
-                    <span className="font-bold text-indigo-900 text-xs">{aiAnalyzedProduct.unidadMedida}</span>
+                    <span className="font-bold text-slate-800 text-xs">{aiAnalyzedProduct.unidadMedida}</span>
                   </div>
-                  <div className="col-span-2 pt-1.5 border-t border-indigo-100/30 flex items-center gap-1.5">
+                  <div className="col-span-2 pt-1.5 border-t border-yellow-100/30 flex items-center gap-1.5">
                     <Barcode className="w-4 h-4 text-slate-400 shrink-0" />
                     <div>
                       <span className="text-[9px] text-slate-400 font-semibold block uppercase leading-none">Código Barras</span>
@@ -2800,7 +3419,7 @@ export default function App() {
                       value={aiProductPriceVenta}
                       onChange={(e) => setAiProductPriceVenta(e.target.value)}
                       placeholder="Monto de venta"
-                      className="w-full bg-slate-50 p-3 rounded-lg border-2 border-indigo-500 focus:ring-0 focus:outline-none font-mono font-bold text-slate-800 text-sm"
+                      className="w-full bg-slate-50 p-3 rounded-lg border-2 border-yellow-500 focus:ring-0 focus:outline-none font-mono font-bold text-slate-800 text-sm"
                     />
                   </div>
                   <div>
@@ -2848,7 +3467,7 @@ export default function App() {
                   </button>
                   <button
                     type="submit"
-                    className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold py-3 rounded-xl shadow-md transition"
+                    className="flex-1 bg-yellow-400 hover:bg-yellow-300 text-slate-900 font-extrabold py-3 rounded-xl shadow-md transition"
                   >
                     💾 Guardar en Inventario
                   </button>
@@ -2879,7 +3498,7 @@ export default function App() {
                   required
                   value={editForm.nombre}
                   onChange={e => setEditForm({ ...editForm, nombre: e.target.value })}
-                  className="w-full bg-slate-50 p-2.5 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  className="w-full bg-slate-50 p-2.5 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-yellow-400"
                 />
               </div>
 
@@ -2891,7 +3510,7 @@ export default function App() {
                     onChange={e => setEditForm({ ...editForm, categoria: e.target.value })}
                     className="w-full bg-slate-50 p-2.5 rounded-lg border border-slate-200 focus:outline-none"
                   >
-                    {categories.filter(c => c !== "Todos").map(cat => (
+                    {allCategories.filter(c => c !== "Todos").map(cat => (
                       <option key={cat} value={cat}>{cat}</option>
                     ))}
                   </select>
@@ -2977,7 +3596,7 @@ export default function App() {
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl cursor-pointer transition text-xs"
+                  className="flex-1 py-2.5 bg-yellow-400 hover:bg-yellow-300 text-white font-bold rounded-xl cursor-pointer transition text-xs"
                 >
                   Guardar Cambios
                 </button>
@@ -3025,7 +3644,7 @@ export default function App() {
               <div className="absolute bottom-0 left-0 w-7 h-7 border-b-2 border-l-2 border-white rounded-bl" />
               <div className="absolute bottom-0 right-0 w-7 h-7 border-b-2 border-r-2 border-white rounded-br" />
               {/* Línea de escaneo animada */}
-              <div className="animate-scan-line absolute left-1 right-1 h-0.5 bg-indigo-400 shadow-[0_0_6px_2px_rgba(99,102,241,0.8)]" />
+              <div className="animate-scan-line absolute left-1 right-1 h-0.5 bg-yellow-400 shadow-[0_0_6px_2px_rgba(250,204,21,0.8)]" />
             </div>
           </div>
 
@@ -3035,7 +3654,7 @@ export default function App() {
               Apunta la cámara al código de barras del producto
             </p>
             {cart.length > 0 && (
-              <div className="bg-indigo-600/80 backdrop-blur-sm text-white text-xs font-bold px-4 py-1.5 rounded-full">
+              <div className="bg-slate-900/80 backdrop-blur-sm text-yellow-400 text-xs font-bold px-4 py-1.5 rounded-full">
                 {cart.length} producto{cart.length !== 1 ? 's' : ''} en el carrito
               </div>
             )}
@@ -3078,7 +3697,7 @@ export default function App() {
                     onChange={e => setUpgradeEmail(e.target.value)}
                     required
                     placeholder="tu@email.com"
-                    className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
+                    className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 transition"
                   />
                 </div>
               </div>
@@ -3093,7 +3712,7 @@ export default function App() {
                     onChange={e => setUpgradePassword(e.target.value)}
                     required
                     placeholder="Mínimo 6 caracteres"
-                    className="w-full pl-10 pr-10 py-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
+                    className="w-full pl-10 pr-10 py-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 transition"
                   />
                   <button
                     type="button"
@@ -3108,7 +3727,7 @@ export default function App() {
               <button
                 type="submit"
                 disabled={upgradeLoading}
-                className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold py-3 rounded-xl transition cursor-pointer"
+                className="w-full bg-yellow-400 hover:bg-yellow-300 disabled:opacity-50 text-slate-900 font-bold py-3 rounded-xl transition cursor-pointer"
               >
                 {upgradeLoading ? 'Guardando...' : 'Crear cuenta y conservar datos'}
               </button>
@@ -3123,7 +3742,7 @@ export default function App() {
           <div className="bg-white dark:bg-slate-800 rounded-3xl shadow-2xl w-full max-w-sm p-6 flex flex-col gap-5 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Bell className="w-5 h-5 text-indigo-500" />
+                <Bell className="w-5 h-5 text-yellow-500" />
                 <h2 className="font-bold text-slate-800 dark:text-slate-100 text-lg">Alertas de stock</h2>
               </div>
               <button onClick={() => setShowAlertModal(false)} className="text-slate-400 hover:text-slate-600 cursor-pointer">
@@ -3143,7 +3762,7 @@ export default function App() {
               <div className="flex items-start gap-3 bg-slate-50 dark:bg-slate-700/50 rounded-2xl px-4 py-3">
                 <span className="text-xl mt-0.5">📧</span>
                 <div>
-                  <p className="text-sm font-bold text-slate-700 dark:text-slate-200">Email a <span className="text-indigo-600">{user?.email}</span></p>
+                  <p className="text-sm font-bold text-slate-700 dark:text-slate-200">Email a <span className="text-yellow-600">{user?.email}</span></p>
                   <p className="text-xs text-slate-500 dark:text-slate-400">Sale desde tu backend de Supabase. Requiere un paso de configuración abajo.</p>
                 </div>
               </div>
@@ -3173,7 +3792,7 @@ export default function App() {
             <div className="border border-slate-200 dark:border-slate-600 rounded-2xl p-4 flex flex-col gap-3">
               <p className="text-xs font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wide">Configurar email — solo una vez</p>
               <ol className="text-xs text-slate-500 dark:text-slate-400 flex flex-col gap-2 list-decimal list-inside leading-relaxed">
-                <li>Crea cuenta gratis en <span className="font-bold text-indigo-600">resend.com</span></li>
+                <li>Crea cuenta gratis en <span className="font-bold text-yellow-600">resend.com</span></li>
                 <li>Ve a <span className="font-bold">API Keys</span> → crea una clave</li>
                 <li>En tu proyecto de Supabase → <span className="font-bold">Edge Functions → Secrets</span> → agrega: <span className="font-mono bg-slate-100 dark:bg-slate-600 px-1.5 py-0.5 rounded text-slate-700 dark:text-slate-200">RESEND_API_KEY = tu_clave</span></li>
                 <li>Desde la terminal del proyecto ejecuta: <span className="font-mono bg-slate-100 dark:bg-slate-600 px-1.5 py-0.5 rounded text-slate-700 dark:text-slate-200">npx supabase functions deploy send-stock-alert</span></li>
@@ -3199,13 +3818,63 @@ export default function App() {
                 setAlertTestLoading(false);
               }}
               disabled={alertTestLoading}
-              className="w-full py-3 border-2 border-indigo-400 text-indigo-700 dark:text-indigo-400 font-bold rounded-xl hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition cursor-pointer disabled:opacity-50 text-sm"
+              className="w-full py-3 border-2 border-yellow-400 text-yellow-700 dark:text-yellow-400 font-bold rounded-xl hover:bg-yellow-50 dark:hover:bg-yellow-900/20 transition cursor-pointer disabled:opacity-50 text-sm"
             >
               {alertTestLoading ? 'Enviando prueba...' : 'Enviar prueba'}
             </button>
           </div>
         </div>
       )}
+
+      {/* Tour guiado */}
+      {tourRunning && <Joyride
+        steps={tourSteps}
+        run={tourRunning}
+        stepIndex={tourStep}
+        continuous
+        onEvent={handleTourCallback}
+        locale={{
+          back: 'Anterior',
+          close: 'Cerrar',
+          last: '¡Listo!',
+          next: 'Siguiente',
+          nextWithProgress: 'Siguiente ({current} de {total})',
+          skip: 'Salir del tour',
+        }}
+        options={{
+          showProgress: true,
+          overlayClickAction: false,
+          buttons: ['back', 'close', 'primary', 'skip'],
+          zIndex: 10000,
+          primaryColor: '#facc15',
+          textColor: '#1e293b',
+        }}
+        styles={{
+          buttonPrimary: {
+            backgroundColor: '#facc15',
+            color: '#1e293b',
+            fontWeight: 700,
+          },
+          buttonBack: {
+            color: '#64748b',
+            fontWeight: 600,
+          },
+          tooltipTitle: {
+            fontSize: '1rem',
+            fontWeight: 800,
+            color: '#1e293b',
+          },
+          tooltipContent: {
+            fontSize: '0.9rem',
+            color: '#475569',
+            padding: '8px 0 0',
+          },
+          tooltip: {
+            borderRadius: 16,
+            padding: '20px 24px',
+          },
+        }}
+      />}
 
     </div>
   );
