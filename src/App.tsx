@@ -45,6 +45,7 @@ import Quagga from "@ericblade/quagga2";
 import { readBarcodes } from "zxing-wasm/reader";
 import { Joyride, ACTIONS, EVENTS, STATUS, type EventData, type Step } from "react-joyride";
 import heic2any from "heic2any";
+import JsBarcode from "jsbarcode";
 
 type PendingOp = {
   id: string;
@@ -148,6 +149,11 @@ export default function App() {
   });
   const [showAddCategoryInput, setShowAddCategoryInput] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
+  const [showBarcodeModal, setShowBarcodeModal] = useState<Product | null>(null);
+  const [barcodeCode, setBarcodeCode] = useState("");
+  const [barcodeLabel, setBarcodeLabel] = useState("");
+  const [barcodePrintQty, setBarcodePrintQty] = useState(1);
+  const barcodeRef = useRef<SVGSVGElement>(null);
 
   const [lowStockAlert, setLowStockAlert] = useState<{ nombre: string; stock: number; stockMinimo: number; unidadMedida: string }[]>([]);
 
@@ -189,7 +195,8 @@ export default function App() {
   const [upgradeShowPassword, setUpgradeShowPassword] = useState(false);
   const [upgradeLoading, setUpgradeLoading] = useState(false);
 
-  const allCategories = ["Todos", ...categories.filter(c => c !== "Todos"), ...customCategories];
+  const productCategories = products.map(p => p.categoria).filter(c => c && !categories.includes(c) && !customCategories.includes(c));
+  const allCategories = ["Todos", ...categories.filter(c => c !== "Todos"), ...customCategories, ...Array.from(new Set(productCategories))];
 
   const addCategory = (name: string) => {
     const trimmed = name.trim();
@@ -375,6 +382,24 @@ export default function App() {
 
   // Mantener productsRef siempre actualizado
   useEffect(() => { productsRef.current = products; }, [products]);
+
+  useEffect(() => {
+    if (!showBarcodeModal) return;
+    setBarcodeCode(showBarcodeModal.codigoBarras || "");
+    setBarcodeLabel(showBarcodeModal.nombre);
+    setBarcodePrintQty(1);
+  }, [showBarcodeModal?.id]);
+
+  useEffect(() => {
+    if (barcodeRef.current && barcodeCode.trim()) {
+      try {
+        JsBarcode(barcodeRef.current, barcodeCode.trim(), {
+          format: "CODE128", width: 2, height: 60,
+          displayValue: true, fontSize: 14, margin: 8,
+        });
+      } catch { /* código inválido, no renderizar */ }
+    }
+  }, [barcodeCode]);
 
   // Scanner de cámara en tiempo real
   useEffect(() => {
@@ -1169,6 +1194,48 @@ export default function App() {
       queueOp('UPDATE_PRODUCT', fromProduct(updatedProduct, user.id));
     }
     notify("Producto actualizado.", "success");
+  };
+
+  const handleGenerateBarcode = () => {
+    const code = "CG" + String(Math.floor(100000000000 + Math.random() * 900000000000));
+    setBarcodeCode(code);
+  };
+
+  const handleSaveAndPrintBarcode = async () => {
+    if (!showBarcodeModal || !barcodeCode.trim()) return;
+    const code = barcodeCode.trim();
+
+    // Guardar código en producto si cambió
+    if (code !== showBarcodeModal.codigoBarras) {
+      const updated = { ...showBarcodeModal, codigoBarras: code };
+      setProducts(prev => prev.map(p => p.id === showBarcodeModal.id ? updated : p));
+      if (isOnline) {
+        await supabase.from('products').update({ codigo_barras: code }).eq('id', showBarcodeModal.id);
+      }
+    }
+
+    const svg = barcodeRef.current;
+    if (!svg) return;
+    const svgData = new XMLSerializer().serializeToString(svg);
+    const label = barcodeLabel.trim() || showBarcodeModal.nombre;
+    const qty = barcodePrintQty;
+
+    const labelHtml = `<div class="label"><div class="name">${label}</div>${svgData}</div>`;
+    const win = window.open('', '_blank', 'width=500,height=400');
+    if (!win) return;
+    win.document.write(`<!DOCTYPE html><html><head><title>Etiqueta</title>
+      <style>
+        body { margin: 0; padding: 16px; font-family: sans-serif; }
+        .page { display: flex; flex-wrap: wrap; gap: 8px; }
+        .label { display: flex; flex-direction: column; align-items: center; padding: 8px 12px; border: 1px dashed #ccc; border-radius: 6px; page-break-inside: avoid; }
+        .name { font-size: 12px; font-weight: bold; margin-bottom: 4px; text-align: center; }
+        svg { max-width: 200px; }
+        @media print { body { margin: 0; padding: 0; } .label { border: none; } }
+      </style></head><body>
+      <div class="page">${Array(qty).fill(labelHtml).join("")}</div>
+      <script>window.onload = () => { window.print(); window.onafterprint = () => window.close(); }<\/script>
+    </body></html>`);
+    win.document.close();
   };
 
   // Delete product
@@ -2314,6 +2381,17 @@ export default function App() {
 
                 <div className="flex items-center gap-2">
                   <button
+                    onClick={() => {
+                      const sinCodigo = products.filter(p => !p.codigoBarras);
+                      if (sinCodigo.length > 0) setShowBarcodeModal(sinCodigo[0]);
+                      else notify("Todos los productos ya tienen código de barras.", "info");
+                    }}
+                    className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm rounded-xl border border-slate-200 transition flex items-center gap-2 cursor-pointer shadow-sm"
+                  >
+                    <Barcode className="w-4 h-4" />
+                    <span>Código</span>
+                  </button>
+                  <button
                     id="tour-inv-foto"
                     onClick={() => setShowAiPhotoModal(true)}
                     className="py-2.5 px-4 bg-yellow-50 hover:bg-yellow-100 text-yellow-700 font-bold text-sm rounded-xl border border-yellow-200 transition flex items-center gap-2 cursor-pointer shadow-sm"
@@ -2407,6 +2485,13 @@ export default function App() {
                         </div>
                         <div className="shrink-0 flex items-center gap-1">
                           <button
+                            onClick={() => setShowBarcodeModal(product)}
+                            className="p-2 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-slate-700 transition cursor-pointer"
+                            title="Código de barras"
+                          >
+                            <Barcode className="w-4 h-4" />
+                          </button>
+                          <button
                             onClick={() => {
                               setShowEditStockModal(product);
                               setEditForm({
@@ -2484,6 +2569,13 @@ export default function App() {
                             </td>
                             <td className="py-4 px-2 text-right">
                               <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  onClick={() => setShowBarcodeModal(product)}
+                                  className="p-2 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-slate-700 transition cursor-pointer"
+                                  title="Código de barras"
+                                >
+                                  <Barcode className="w-5 h-5" />
+                                </button>
                                 <button
                                   onClick={() => {
                                     setShowEditStockModal(product);
@@ -3109,15 +3201,9 @@ export default function App() {
               <div className="grid grid-cols-3 gap-2">
                 <div>
                   <label className="block text-slate-500 font-bold mb-1 font-sans">U. Medida</label>
-                  <select
-                    value={newProduct.unidadMedida}
-                    onChange={(e) => setNewProduct({ ...newProduct, unidadMedida: e.target.value })}
-                    className="w-full bg-slate-50 p-2.5 rounded-lg border border-slate-200"
-                  >
-                    <option value="unidades">unidades</option>
-                    <option value="kg">kilogramos</option>
-                    <option value="litros">litros</option>
-                  </select>
+                  <div className="w-full bg-slate-100 p-2.5 rounded-lg border border-slate-200 text-slate-500 text-sm font-semibold">
+                    unidades
+                  </div>
                 </div>
                 <div>
                   <label className="block text-slate-500 font-bold mb-1 font-sans">Stock Inicial</label>
@@ -3554,15 +3640,9 @@ export default function App() {
               <div className="grid grid-cols-3 gap-2">
                 <div>
                   <label className="block text-slate-500 font-bold mb-1 font-sans">U. Medida</label>
-                  <select
-                    value={editForm.unidadMedida}
-                    onChange={e => setEditForm({ ...editForm, unidadMedida: e.target.value })}
-                    className="w-full bg-slate-50 p-2.5 rounded-lg border border-slate-200 focus:outline-none"
-                  >
-                    <option value="unidades">unidades</option>
-                    <option value="kg">kilogramos</option>
-                    <option value="litros">litros</option>
-                  </select>
+                  <div className="w-full bg-slate-100 p-2.5 rounded-lg border border-slate-200 text-slate-500 text-sm font-semibold">
+                    unidades
+                  </div>
                 </div>
                 <div>
                   <label className="block text-slate-500 font-bold mb-1 font-sans">Stock</label>
@@ -3875,6 +3955,113 @@ export default function App() {
           },
         }}
       />}
+
+
+      {/* Modal: Código de barras */}
+      {showBarcodeModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-6 flex flex-col gap-4 max-h-[90vh] overflow-y-auto">
+
+            {/* Header */}
+            <div className="flex items-start justify-between">
+              <div>
+                <h2 className="font-bold text-slate-800 text-lg">Código de barras</h2>
+                <p className="text-slate-400 text-xs mt-0.5">Imprime una etiqueta para tu producto</p>
+              </div>
+              <button onClick={() => setShowBarcodeModal(null)} className="p-2 hover:bg-slate-100 rounded-xl cursor-pointer">
+                <X className="w-5 h-5 text-slate-400" />
+              </button>
+            </div>
+
+            {/* Selector de producto */}
+            <select
+              value={showBarcodeModal.id}
+              onChange={e => {
+                const p = products.find(p => p.id === e.target.value);
+                if (p) setShowBarcodeModal(p);
+              }}
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-yellow-400"
+            >
+              {products.map(p => (
+                <option key={p.id} value={p.id}>{p.nombre}{!p.codigoBarras ? " — sin código" : ""}</option>
+              ))}
+            </select>
+
+            {/* Input de código */}
+            <div>
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wide block mb-1.5">Código</label>
+              <div className="flex gap-2">
+                <input
+                  value={barcodeCode}
+                  onChange={e => setBarcodeCode(e.target.value)}
+                  placeholder="Escribe o genera automático"
+                  className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                />
+                <button
+                  onClick={handleGenerateBarcode}
+                  className="px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm rounded-xl transition cursor-pointer shrink-0"
+                >
+                  Auto
+                </button>
+              </div>
+            </div>
+
+            {/* Nombre en etiqueta */}
+            <div>
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wide block mb-1.5">Nombre en etiqueta (opcional)</label>
+              <input
+                value={barcodeLabel}
+                onChange={e => setBarcodeLabel(e.target.value)}
+                placeholder={showBarcodeModal.nombre}
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
+              />
+            </div>
+
+            {/* Preview */}
+            {barcodeCode.trim() && (
+              <div className="border-2 border-dashed border-slate-200 rounded-2xl p-4 flex flex-col items-center gap-1">
+                <p className="text-xs font-bold text-slate-700 text-center">{barcodeLabel || showBarcodeModal.nombre}</p>
+                <svg ref={barcodeRef as any} className="w-full max-w-[240px]" />
+              </div>
+            )}
+
+            {/* Cantidad */}
+            <div>
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wide block mb-2">Cantidad de etiquetas</label>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setBarcodePrintQty(q => Math.max(1, q - 1))}
+                  className="w-9 h-9 rounded-xl bg-slate-100 hover:bg-slate-200 font-bold text-lg cursor-pointer transition"
+                >−</button>
+                <span className="font-bold text-slate-800 text-lg w-6 text-center">{barcodePrintQty}</span>
+                <button
+                  onClick={() => setBarcodePrintQty(q => Math.min(20, q + 1))}
+                  className="w-9 h-9 rounded-xl bg-slate-100 hover:bg-slate-200 font-bold text-lg cursor-pointer transition"
+                >+</button>
+                <span className="text-slate-400 text-xs">máx. 20 por impresión</span>
+              </div>
+            </div>
+
+            {/* Botones */}
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={() => setShowBarcodeModal(null)}
+                className="flex-1 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm transition cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleSaveAndPrintBarcode}
+                disabled={!barcodeCode.trim()}
+                className="flex-1 py-3 rounded-xl bg-yellow-400 hover:bg-yellow-300 disabled:opacity-40 text-slate-900 font-bold text-sm flex items-center justify-center gap-2 transition cursor-pointer"
+              >
+                <Printer className="w-4 h-4" /> Imprimir
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
 
     </div>
   );
