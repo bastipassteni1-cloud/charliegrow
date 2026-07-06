@@ -111,6 +111,7 @@ export default function App() {
   const [isSyncingQueue, setIsSyncingQueue] = useState(false);
   const isSyncingRef = useRef(false);
   const isLoadingRef = useRef(false);
+  const pendingReloadRef = useRef(false);
   const reloadRef = useRef<() => Promise<void>>(async () => {});
 
   // Live camera scanner
@@ -316,14 +317,16 @@ export default function App() {
     setSyncError(null);
 
     const loadAll = async () => {
-      if (isSyncingRef.current || isLoadingRef.current) return;
+      if (isLoadingRef.current) { pendingReloadRef.current = true; return; }
       isLoadingRef.current = true;
+      pendingReloadRef.current = false;
+
       const { data: prods, error: prodErr } = await supabase
         .from('products')
         .select('*')
         .order('updated_at', { ascending: false });
 
-      if (prodErr) { setSyncError("Error cargando productos."); notify("Error al cargar productos. Revisa tu conexión.", "error"); setIsSyncing(false); isLoadingRef.current = false; return; }
+      if (prodErr) { setSyncError("Error cargando productos."); setIsSyncing(false); isLoadingRef.current = false; return; }
       setProducts(prods ? prods.map(toProduct) : []);
 
       const { data: salesData, error: salesErr } = await supabase
@@ -331,10 +334,11 @@ export default function App() {
         .select('*, sale_items(*)')
         .order('fecha', { ascending: false });
 
-      if (salesErr) notify("Error al cargar ventas. Los datos pueden estar desactualizados.", "error");
-      else if (salesData) setSales(salesData.map(toSale));
+      if (!salesErr && salesData) setSales(salesData.map(toSale));
       setIsSyncing(false);
       isLoadingRef.current = false;
+
+      if (pendingReloadRef.current) loadAll();
     };
 
     reloadRef.current = loadAll;
@@ -378,6 +382,14 @@ export default function App() {
       syncQueue(pendingOps);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOnline]);
+
+  // Recargar datos al volver al tab (el usuario puede haber estado en otra app)
+  useEffect(() => {
+    const onFocus = () => { if (isOnline && reloadRef.current) reloadRef.current(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden && isOnline) reloadRef.current?.(); });
+    return () => window.removeEventListener('focus', onFocus);
   }, [isOnline]);
 
   // Mantener productsRef siempre actualizado
