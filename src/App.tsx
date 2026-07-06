@@ -210,6 +210,25 @@ export default function App() {
     setShowAddCategoryInput(false);
   };
 
+  const deleteCategory = (cat: string) => {
+    setConfirmModal({
+      message: `¿Eliminar la categoría "${cat}"? Los productos de esta categoría quedarán como "Otros".`,
+      onConfirm: async () => {
+        const affected = products.filter(p => p.categoria === cat);
+        if (affected.length > 0) {
+          setProducts(prev => prev.map(p => p.categoria === cat ? { ...p, categoria: "Otros" } : p));
+          await Promise.all(affected.map(p =>
+            supabase.from('products').update({ categoria: "Otros" }).eq('id', p.id)
+          ));
+        }
+        const updated = customCategories.filter(c => c !== cat);
+        setCustomCategories(updated);
+        localStorage.setItem('custom_categories', JSON.stringify(updated));
+        if (selectedCategory === cat) setSelectedCategory("Todos");
+      }
+    });
+  };
+
   // Tour guiado
   const [tourRunning, setTourRunning] = useState(false);
   const [tourStep, setTourStep] = useState(0);
@@ -396,23 +415,24 @@ export default function App() {
   // Mantener productsRef siempre actualizado
   useEffect(() => { productsRef.current = products; }, [products]);
 
-  useEffect(() => {
-    if (!showBarcodeModal) return;
-    setBarcodeCode(showBarcodeModal.codigoBarras || "");
-    setBarcodeLabel(showBarcodeModal.nombre);
+  const openBarcodeModal = (product: Product) => {
+    setBarcodeCode(product.codigoBarras || "");
+    setBarcodeLabel(product.nombre);
     setBarcodePrintQty(1);
-  }, [showBarcodeModal?.id]);
+    setShowBarcodeModal(product);
+  };
 
-  useEffect(() => {
-    if (barcodeRef.current && barcodeCode.trim()) {
+  const renderBarcodeSvg = (el: SVGSVGElement | null, code: string) => {
+    (barcodeRef as any).current = el;
+    if (el && code.trim()) {
       try {
-        JsBarcode(barcodeRef.current, barcodeCode.trim(), {
+        JsBarcode(el, code.trim(), {
           format: "CODE128", width: 2, height: 60,
           displayValue: true, fontSize: 14, margin: 8,
         });
-      } catch { /* código inválido, no renderizar */ }
+      } catch {}
     }
-  }, [barcodeCode]);
+  };
 
   // Scanner de cámara en tiempo real
   useEffect(() => {
@@ -2396,7 +2416,7 @@ export default function App() {
                   <button
                     onClick={() => {
                       const sinCodigo = products.filter(p => !p.codigoBarras);
-                      if (sinCodigo.length > 0) setShowBarcodeModal(sinCodigo[0]);
+                      if (sinCodigo.length > 0) openBarcodeModal(sinCodigo[0]);
                       else notify("Todos los productos ya tienen código de barras.", "info");
                     }}
                     className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm rounded-xl border border-slate-200 transition flex items-center gap-2 cursor-pointer shadow-sm"
@@ -2467,17 +2487,26 @@ export default function App() {
                     <option value="alpha">Alfabético A-Z</option>
                   </select>
                 </div>
-                <div className="col-span-1 sm:col-span-4">
+                <div className="col-span-1 sm:col-span-4 flex gap-2">
                   <select
                     value={selectedCategory}
                     onChange={(e) => setSelectedCategory(e.target.value)}
-                    className="w-full bg-slate-50 py-3 px-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                    className="flex-1 bg-slate-50 py-3 px-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
                   >
                     <option value="Todos">Todas las categorías</option>
                     {allCategories.filter(c => c !== "Todos").map(cat => (
                       <option key={cat} value={cat}>{cat}</option>
                     ))}
                   </select>
+                  {selectedCategory !== "Todos" && !categories.includes(selectedCategory) && (
+                    <button
+                      onClick={() => deleteCategory(selectedCategory)}
+                      className="p-3 bg-rose-50 hover:bg-rose-100 text-rose-500 rounded-xl transition cursor-pointer shrink-0"
+                      title="Eliminar categoría"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -2515,7 +2544,7 @@ export default function App() {
                         </div>
                         <div className="shrink-0 flex items-center gap-1">
                           <button
-                            onClick={() => setShowBarcodeModal(product)}
+                            onClick={() => openBarcodeModal(product)}
                             className="p-2 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-slate-700 transition cursor-pointer"
                             title="Código de barras"
                           >
@@ -2606,7 +2635,7 @@ export default function App() {
                             <td className="py-4 px-2 text-right">
                               <div className="flex items-center justify-end gap-1.5">
                                 <button
-                                  onClick={() => setShowBarcodeModal(product)}
+                                  onClick={() => openBarcodeModal(product)}
                                   className="p-2 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-slate-700 transition cursor-pointer"
                                   title="Código de barras"
                                 >
@@ -3180,7 +3209,7 @@ export default function App() {
                   required
                   value={newProduct.nombre}
                   onChange={(e) => setNewProduct({ ...newProduct, nombre: e.target.value })}
-                  placeholder="ej. Camiseta talla M, Café en grano 500g, Shampoo 400ml"
+                  placeholder=""
                   className="w-full bg-slate-50 p-2.5 rounded-lg border border-slate-200 focus:outline-none"
                 />
               </div>
@@ -3199,7 +3228,7 @@ export default function App() {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-slate-500 font-bold mb-1 font-sans">Código de Barras (Opcional)</label>
+                  <label className="block text-slate-500 font-bold mb-1 font-sans">Código de Barras</label>
                   <input
                     type="text"
                     value={newProduct.codigoBarras}
@@ -3212,23 +3241,23 @@ export default function App() {
 
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="block text-slate-500 font-bold mb-1 font-sans font-mono text-rose-800">Precio Compra ($Coste)</label>
+                  <label className="block text-slate-500 font-bold mb-1 font-sans font-mono text-rose-800">Precio Compra</label>
                   <input
                     type="number"
                     value={newProduct.precioCompra}
                     onChange={(e) => setNewProduct({ ...newProduct, precioCompra: e.target.value })}
-                    placeholder="Monto en pesos"
+                    placeholder="Valor"
                     className="w-full bg-slate-50 p-2.5 rounded-lg border border-slate-200 font-mono"
                   />
                 </div>
                 <div>
-                  <label className="block text-slate-700 font-bold mb-1 font-sans">Precio Venta ($Público) *</label>
+                  <label className="block text-slate-700 font-bold mb-1 font-sans">Precio Venta *</label>
                   <input
                     type="number"
                     required
                     value={newProduct.precioVenta}
                     onChange={(e) => setNewProduct({ ...newProduct, precioVenta: e.target.value })}
-                    placeholder="Monto en pesos"
+                    placeholder="Valor"
                     className="w-full bg-slate-50 p-2.5 rounded-lg border border-slate-200 font-mono font-bold"
                   />
                 </div>
@@ -4014,7 +4043,7 @@ export default function App() {
               value={showBarcodeModal.id}
               onChange={e => {
                 const p = products.find(p => p.id === e.target.value);
-                if (p) setShowBarcodeModal(p);
+                if (p) openBarcodeModal(p);
               }}
               className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-yellow-400"
             >
@@ -4054,10 +4083,14 @@ export default function App() {
             </div>
 
             {/* Preview */}
-            {barcodeCode.trim() && (
+            {barcodeCode.trim() ? (
               <div className="border-2 border-dashed border-slate-200 rounded-2xl p-4 flex flex-col items-center gap-1">
                 <p className="text-xs font-bold text-slate-700 text-center">{barcodeLabel || showBarcodeModal.nombre}</p>
-                <svg ref={barcodeRef as any} className="w-full max-w-[240px]" />
+                <svg ref={el => renderBarcodeSvg(el, barcodeCode)} className="w-full max-w-[240px]" />
+              </div>
+            ) : (
+              <div className="border-2 border-dashed border-slate-100 rounded-2xl p-6 flex items-center justify-center">
+                <p className="text-slate-300 text-sm font-semibold">Vista previa del código</p>
               </div>
             )}
 
