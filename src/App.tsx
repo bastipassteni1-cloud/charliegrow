@@ -150,6 +150,7 @@ export default function App() {
   });
   const [showAddCategoryInput, setShowAddCategoryInput] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
+  const [inventorySort, setInventorySort] = useState<'recent' | 'stock-desc' | 'stock-asc' | 'alpha'>('recent');
   const [showBarcodeModal, setShowBarcodeModal] = useState<Product | null>(null);
   const [barcodeCode, setBarcodeCode] = useState("");
   const [barcodeLabel, setBarcodeLabel] = useState("");
@@ -2403,12 +2404,32 @@ export default function App() {
                     <Barcode className="w-4 h-4" />
                     <span>Código</span>
                   </button>
+                  {showAddCategoryInput ? (
+                    <form onSubmit={e => { e.preventDefault(); addCategory(newCategoryName); }} className="flex gap-1">
+                      <input
+                        autoFocus
+                        value={newCategoryName}
+                        onChange={e => setNewCategoryName(e.target.value)}
+                        placeholder="Nueva categoría"
+                        className="py-2.5 px-3 rounded-xl border border-slate-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-yellow-400 w-36"
+                        onBlur={() => { if (!newCategoryName.trim()) setShowAddCategoryInput(false); }}
+                      />
+                      <button type="submit" className="bg-slate-800 text-white px-3 rounded-xl font-bold text-sm cursor-pointer shrink-0">+</button>
+                    </form>
+                  ) : (
+                    <button
+                      onClick={() => setShowAddCategoryInput(true)}
+                      className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold text-sm rounded-xl border border-slate-200 cursor-pointer shrink-0 transition shadow-sm"
+                    >
+                      + Categoría
+                    </button>
+                  )}
                   <button
                     id="tour-inv-foto"
                     onClick={() => setShowAiPhotoModal(true)}
                     className="py-2.5 px-4 bg-yellow-50 hover:bg-yellow-100 text-yellow-700 font-bold text-sm rounded-xl border border-yellow-200 transition flex items-center gap-2 cursor-pointer shadow-sm"
                   >
-                    <Barcode className="w-4 h-4" />
+                    <Camera className="w-4 h-4" />
                     <span>Foto</span>
                   </button>
                   <button
@@ -2424,7 +2445,7 @@ export default function App() {
 
               {/* Filtros */}
               <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 pb-3 border-b border-slate-100">
-                <div className="col-span-1 sm:col-span-6 relative">
+                <div className="col-span-1 sm:col-span-5 relative">
                   <Search className="absolute left-3 top-3.5 text-slate-400 w-4 h-4" />
                   <input
                     type="text"
@@ -2434,38 +2455,29 @@ export default function App() {
                     className="w-full bg-slate-50 py-3 pl-9 pr-4 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 transition"
                   />
                 </div>
-                <div className="col-span-1 sm:col-span-6 flex gap-2">
+                <div className="col-span-1 sm:col-span-3">
+                  <select
+                    value={inventorySort}
+                    onChange={e => setInventorySort(e.target.value as typeof inventorySort)}
+                    className="w-full bg-slate-50 py-3 px-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                  >
+                    <option value="recent">Último registrado</option>
+                    <option value="stock-desc">Mayor stock primero</option>
+                    <option value="stock-asc">Menor stock primero</option>
+                    <option value="alpha">Alfabético A-Z</option>
+                  </select>
+                </div>
+                <div className="col-span-1 sm:col-span-4">
                   <select
                     value={selectedCategory}
                     onChange={(e) => setSelectedCategory(e.target.value)}
-                    className="flex-1 bg-slate-50 py-3 px-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                    className="w-full bg-slate-50 py-3 px-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
                   >
                     <option value="Todos">Todas las categorías</option>
                     {allCategories.filter(c => c !== "Todos").map(cat => (
                       <option key={cat} value={cat}>{cat}</option>
                     ))}
                   </select>
-                  {showAddCategoryInput ? (
-                    <form onSubmit={e => { e.preventDefault(); addCategory(newCategoryName); }} className="flex gap-1">
-                      <input
-                        autoFocus
-                        value={newCategoryName}
-                        onChange={e => setNewCategoryName(e.target.value)}
-                        placeholder="Nueva categoría"
-                        className="py-3 px-3 rounded-xl border border-slate-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-yellow-400 w-40"
-                        onBlur={() => { if (!newCategoryName.trim()) setShowAddCategoryInput(false); }}
-                      />
-                      <button type="submit" className="bg-slate-800 text-white px-4 rounded-xl font-bold text-sm cursor-pointer shrink-0">+</button>
-                    </form>
-                  ) : (
-                    <button
-                      onClick={() => setShowAddCategoryInput(true)}
-                      className="bg-slate-100 hover:bg-slate-200 text-slate-600 px-4 rounded-xl font-bold text-sm cursor-pointer shrink-0 transition"
-                      title="Crear categoría"
-                    >
-                      + Cat
-                    </button>
-                  )}
                 </div>
               </div>
 
@@ -2474,6 +2486,12 @@ export default function App() {
                 {products
                   .filter(p => selectedCategory === "Todos" || p.categoria === selectedCategory)
                   .filter(p => p.nombre.toLowerCase().includes(searchTerm.toLowerCase()) || (p.codigoBarras && p.codigoBarras.includes(searchTerm)))
+                  .sort((a, b) => {
+                    if (inventorySort === 'stock-desc') return b.stock - a.stock;
+                    if (inventorySort === 'stock-asc') return a.stock - b.stock;
+                    if (inventorySort === 'alpha') return a.nombre.localeCompare(b.nombre, 'es');
+                    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+                  })
                   .map((product) => {
                     const isLow = product.stock <= product.stockMinimo;
                     const markup = product.precioCompra > 0
@@ -2545,6 +2563,12 @@ export default function App() {
                     {products
                       .filter(p => selectedCategory === "Todos" || p.categoria === selectedCategory)
                       .filter(p => p.nombre.toLowerCase().includes(searchTerm.toLowerCase()) || (p.codigoBarras && p.codigoBarras.includes(searchTerm)))
+                      .sort((a, b) => {
+                        if (inventorySort === 'stock-desc') return b.stock - a.stock;
+                        if (inventorySort === 'stock-asc') return a.stock - b.stock;
+                        if (inventorySort === 'alpha') return a.nombre.localeCompare(b.nombre, 'es');
+                        return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+                      })
                       .map((product) => {
                         const isLow = product.stock <= product.stockMinimo;
                         const markup = product.precioCompra > 0
