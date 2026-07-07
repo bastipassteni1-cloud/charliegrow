@@ -1247,23 +1247,47 @@ export default function App() {
       }
     }
 
-    const svg = barcodeRef.current;
-    if (!svg) return;
-    const svgData = new XMLSerializer().serializeToString(svg);
+    // Generar SVG fresco para impresión con dimensiones optimizadas para 50x30mm
+    const printSvgEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    try {
+      JsBarcode(printSvgEl, code, {
+        format: "CODE128",
+        width: 1.8,
+        height: 44,
+        displayValue: true,
+        fontSize: 9,
+        margin: 2,
+        textMargin: 2,
+      });
+    } catch { return; }
+    const svgData = new XMLSerializer().serializeToString(printSvgEl);
     const label = barcodeLabel.trim() || showBarcodeModal.nombre;
     const qty = barcodePrintQty;
 
     const labelHtml = `<div class="label"><div class="name">${label}</div>${svgData}</div>`;
-    const win = window.open('', '_blank', 'width=500,height=400');
+    const win = window.open('', '_blank', 'width=300,height=250');
     if (!win) return;
     win.document.write(`<!DOCTYPE html><html><head><title>Etiqueta</title>
       <style>
-        body { margin: 0; padding: 16px; font-family: sans-serif; }
-        .page { display: flex; flex-wrap: wrap; gap: 8px; }
-        .label { display: flex; flex-direction: column; align-items: center; padding: 8px 12px; border: 1px dashed #ccc; border-radius: 6px; page-break-inside: avoid; }
-        .name { font-size: 12px; font-weight: bold; margin-bottom: 4px; text-align: center; }
-        svg { max-width: 200px; }
-        @media print { body { margin: 0; padding: 0; } .label { border: none; } }
+        @page { size: 50mm 30mm; margin: 0; }
+        * { box-sizing: border-box; }
+        body { margin: 0; padding: 0; font-family: Arial, sans-serif; background: white; }
+        .page { display: flex; flex-wrap: wrap; }
+        .label {
+          width: 50mm; height: 30mm;
+          display: flex; flex-direction: column;
+          align-items: center; justify-content: center;
+          padding: 1.5mm 2mm 1mm;
+          overflow: hidden;
+          page-break-after: always;
+        }
+        .name {
+          font-size: 7.5pt; font-weight: bold;
+          text-align: center; line-height: 1.1;
+          max-width: 46mm; word-break: break-word;
+          margin-bottom: 1mm;
+        }
+        svg { width: 46mm; height: auto; display: block; }
       </style></head><body>
       <div class="page">${Array(qty).fill(labelHtml).join("")}</div>
       <script>window.onload = () => { window.print(); window.onafterprint = () => window.close(); }<\/script>
