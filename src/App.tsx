@@ -3250,40 +3250,39 @@ export default function App() {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-slate-500 font-bold mb-1 font-sans">Categoría</label>
-                  <select
-                    value={newProduct.categoria}
-                    onChange={(e) => setNewProduct({ ...newProduct, categoria: e.target.value })}
-                    className="w-full bg-slate-50 p-2.5 rounded-lg border border-slate-200"
+              <div>
+                <label className="block text-slate-500 font-bold mb-1 font-sans">Categoría</label>
+                <select
+                  value={newProduct.categoria}
+                  onChange={(e) => setNewProduct({ ...newProduct, categoria: e.target.value })}
+                  className="w-full bg-slate-50 p-2.5 rounded-lg border border-slate-200"
+                >
+                  {allCategories.filter(c => c !== "Todos").map(cat => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-slate-500 font-bold mb-1 font-sans">Código de Barras</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newProduct.codigoBarras}
+                    onChange={(e) => setNewProduct({ ...newProduct, codigoBarras: e.target.value })}
+                    placeholder="Escanear o tipear"
+                    className="flex-1 bg-slate-50 p-2.5 rounded-lg border border-slate-200 font-mono min-w-0"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const code = "CG" + String(Math.floor(100000000000 + Math.random() * 900000000000));
+                      setNewProduct(prev => ({ ...prev, codigoBarras: code }));
+                    }}
+                    className="px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm rounded-lg border border-slate-200 transition cursor-pointer shrink-0"
                   >
-                    {allCategories.filter(c => c !== "Todos").map(cat => (
-                      <option key={cat} value={cat}>{cat}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-slate-500 font-bold mb-1 font-sans">Código de Barras</label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={newProduct.codigoBarras}
-                      onChange={(e) => setNewProduct({ ...newProduct, codigoBarras: e.target.value })}
-                      placeholder="Escanear o tipear"
-                      className="flex-1 bg-slate-50 p-2.5 rounded-lg border border-slate-200 font-mono"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const code = "CG" + String(Math.floor(100000000000 + Math.random() * 900000000000));
-                        setNewProduct(prev => ({ ...prev, codigoBarras: code }));
-                      }}
-                      className="px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm rounded-lg border border-slate-200 transition cursor-pointer shrink-0"
-                    >
-                      Auto
-                    </button>
-                  </div>
+                    Auto
+                  </button>
                 </div>
               </div>
 
