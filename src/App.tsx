@@ -117,7 +117,7 @@ export default function App() {
   // Live camera scanner
   const [showLiveScanner, setShowLiveScanner] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const codeReaderRef = useRef<BrowserMultiFormatReader | null>(null);
+  const codeReaderRef = useRef<{ stop: () => void } | null>(null);
   const lastScannedRef = useRef<string | null>(null);
   const productsRef = useRef<Product[]>([]);
 
@@ -473,9 +473,7 @@ export default function App() {
 
       try {
         const codeReader = new BrowserMultiFormatReader();
-        codeReaderRef.current = codeReader;
-
-        await codeReader.decodeFromVideoDevice(undefined, videoRef.current, (result) => {
+        const controls = await codeReader.decodeFromVideoDevice(undefined, videoRef.current, (result) => {
           if (!result || !active) return;
           const barcode = result.getText();
           if (barcode === lastScannedRef.current) return;
@@ -490,6 +488,7 @@ export default function App() {
             notify("Código no encontrado en el catálogo", "info");
           }
         });
+        if (active) codeReaderRef.current = controls;
       } catch (err: any) {
         if (!active) return;
         console.error("Scanner error:", err);
@@ -508,7 +507,7 @@ export default function App() {
 
     return () => {
       active = false;
-      codeReaderRef.current?.reset();
+      codeReaderRef.current?.stop();
       codeReaderRef.current = null;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3379,7 +3378,7 @@ export default function App() {
                   Cancelar
                 </button>
                 <button
-                  onClick={() => { confirmModal.onConfirm(); setConfirmModal(null); }}
+                  onClick={async () => { await confirmModal.onConfirm(); setConfirmModal(null); }}
                   className="flex-1 py-2.5 rounded-xl bg-red-500 text-white font-bold text-sm hover:bg-red-600 transition cursor-pointer"
                 >
                   Eliminar
@@ -4102,7 +4101,7 @@ export default function App() {
                     ) : (
                       <>
                         <span className="flex-1 text-sm font-semibold text-slate-700">{cat}</span>
-                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition">
+                        <div className="flex gap-1">
                           <button
                             onClick={() => setEditingCategory({ original: cat, value: cat })}
                             className="p-1.5 hover:bg-yellow-50 rounded-lg text-slate-400 hover:text-yellow-600 cursor-pointer transition"
