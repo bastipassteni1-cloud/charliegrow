@@ -148,6 +148,9 @@ export default function App() {
   const [customCategories, setCustomCategories] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem('custom_categories') || '[]'); } catch { return []; }
   });
+  const [deletedCategories, setDeletedCategories] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('deleted_categories') || '[]'); } catch { return []; }
+  });
   const [showAddCategoryInput, setShowAddCategoryInput] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [showCategoryModal, setShowCategoryModal] = useState(false);
@@ -200,14 +203,27 @@ export default function App() {
   const [upgradeLoading, setUpgradeLoading] = useState(false);
 
   const productCategories = products.map(p => p.categoria).filter(c => c && !categories.includes(c) && !customCategories.includes(c));
-  const allCategories = ["Todos", ...categories.filter(c => c !== "Todos"), ...customCategories, ...Array.from(new Set(productCategories))];
+  const allCategories = [
+    "Todos",
+    ...categories.filter(c => c !== "Todos" && !deletedCategories.includes(c)),
+    ...customCategories.filter(c => !deletedCategories.includes(c)),
+    ...Array.from(new Set(productCategories)).filter(c => !deletedCategories.includes(c)),
+  ];
 
   const addCategory = (name: string) => {
     const trimmed = name.trim();
     if (!trimmed || allCategories.includes(trimmed)) return;
-    const updated = [...customCategories, trimmed];
-    setCustomCategories(updated);
-    localStorage.setItem('custom_categories', JSON.stringify(updated));
+    setCustomCategories(prev => {
+      const updated = [...prev, trimmed];
+      localStorage.setItem('custom_categories', JSON.stringify(updated));
+      return updated;
+    });
+    // Si era una predefinida eliminada, restaurarla del registro de eliminadas
+    setDeletedCategories(prev => {
+      const updated = prev.filter(c => c !== trimmed);
+      localStorage.setItem('deleted_categories', JSON.stringify(updated));
+      return updated;
+    });
     setNewCategoryName("");
     setShowAddCategoryInput(false);
   };
@@ -254,6 +270,11 @@ export default function App() {
         setCustomCategories(prev => {
           const updated = prev.filter(c => c !== cat);
           localStorage.setItem('custom_categories', JSON.stringify(updated));
+          return updated;
+        });
+        setDeletedCategories(prev => {
+          const updated = prev.includes(cat) ? prev : [...prev, cat];
+          localStorage.setItem('deleted_categories', JSON.stringify(updated));
           return updated;
         });
         if (selectedCategory === cat) setSelectedCategory("Todos");
