@@ -215,19 +215,35 @@ export default function App() {
   const renameCategory = async (oldName: string, newName: string) => {
     const trimmed = newName.trim();
     if (!trimmed || trimmed === oldName) return;
-    const affected = products.filter(p => p.categoria === oldName);
-    if (affected.length > 0) {
-      setProducts(prev => prev.map(p => p.categoria === oldName ? { ...p, categoria: trimmed } : p));
-      await Promise.all(affected.map(p =>
-        supabase.from('products').update({ categoria: trimmed }).eq('id', p.id)
-      ));
-    }
-    const updated = customCategories.filter(c => c !== oldName);
-    if (!updated.includes(trimmed)) updated.push(trimmed);
-    setCustomCategories(updated);
-    localStorage.setItem('custom_categories', JSON.stringify(updated));
+
+    // Actualizar categorías personalizadas
+    setCustomCategories(prev => {
+      const updated = prev.filter(c => c !== oldName);
+      if (!updated.includes(trimmed)) updated.push(trimmed);
+      localStorage.setItem('custom_categories', JSON.stringify(updated));
+      return updated;
+    });
     if (selectedCategory === oldName) setSelectedCategory(trimmed);
     setEditingCategory(null);
+
+    // Actualizar productos afectados
+    const affected = productsRef.current.filter(p => p.categoria === oldName);
+    if (affected.length > 0) {
+      setProducts(prev => prev.map(p => p.categoria === oldName ? { ...p, categoria: trimmed } : p));
+      if (isOnline) {
+        const results = await Promise.all(affected.map(p =>
+          supabase.from('products').update({ categoria: trimmed }).eq('id', p.id)
+        ));
+        const anyError = results.find(r => r.error);
+        if (anyError) {
+          notify("Error al renombrar en algunos productos. Reintenta.", "error");
+          return;
+        }
+      } else {
+        affected.forEach(p => queueOp('UPDATE_PRODUCT', fromProduct({ ...p, categoria: trimmed }, user!.id)));
+      }
+    }
+    notify("Categoría renombrada.", "success");
   };
 
   const deleteCategory = (cat: string) => {
@@ -793,11 +809,16 @@ export default function App() {
       setProducts(updatedProducts);
 
       if (isOnline) {
-        await Promise.all(
+        const results = await Promise.all(
           stockUpdates.map(u =>
             supabase.from('products').update({ stock: u.stock, updated_at: u.updated_at }).eq('id', u.id)
           )
         );
+        const anyError = results.find(r => r.error);
+        if (anyError) {
+          notify("Error al guardar algunos cambios de stock. Reintenta.", "error");
+          return;
+        }
       } else {
         stockUpdates.forEach(u => queueOp('UPDATE_STOCK', u));
       }
@@ -1509,9 +1530,11 @@ export default function App() {
       const { error: itemsErr } = await supabase.from('sale_items').insert(saleItems);
       if (itemsErr) throw itemsErr;
 
-      await Promise.all(stockUpdates.map(u =>
+      const stockResults = await Promise.all(stockUpdates.map(u =>
         supabase.from('products').update({ stock: u.stock, updated_at: u.updated_at }).eq('id', u.id)
       ));
+      const stockErr = stockResults.find(r => r.error);
+      if (stockErr) console.error("Stock update partial failure:", stockErr.error);
 
       notify("¡Venta registrada! Stock actualizado.", "success");
     } catch (err) {
