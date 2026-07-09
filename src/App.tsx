@@ -150,6 +150,8 @@ export default function App() {
   });
   const [showAddCategoryInput, setShowAddCategoryInput] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
+  const [showCategoryModal, setShowCategoryModal] = useState(false);
+  const [editingCategory, setEditingCategory] = useState<{ original: string; value: string } | null>(null);
   const [inventorySort, setInventorySort] = useState<'recent' | 'stock-desc' | 'stock-asc' | 'alpha'>('recent');
   const [showBarcodeModal, setShowBarcodeModal] = useState<Product | null>(null);
   const [barcodeCode, setBarcodeCode] = useState("");
@@ -208,6 +210,24 @@ export default function App() {
     localStorage.setItem('custom_categories', JSON.stringify(updated));
     setNewCategoryName("");
     setShowAddCategoryInput(false);
+  };
+
+  const renameCategory = async (oldName: string, newName: string) => {
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed === oldName) return;
+    const affected = products.filter(p => p.categoria === oldName);
+    if (affected.length > 0) {
+      setProducts(prev => prev.map(p => p.categoria === oldName ? { ...p, categoria: trimmed } : p));
+      await Promise.all(affected.map(p =>
+        supabase.from('products').update({ categoria: trimmed }).eq('id', p.id)
+      ));
+    }
+    const updated = customCategories.filter(c => c !== oldName);
+    if (!updated.includes(trimmed)) updated.push(trimmed);
+    setCustomCategories(updated);
+    localStorage.setItem('custom_categories', JSON.stringify(updated));
+    if (selectedCategory === oldName) setSelectedCategory(trimmed);
+    setEditingCategory(null);
   };
 
   const deleteCategory = (cat: string) => {
@@ -1243,7 +1263,14 @@ export default function App() {
       const updated = { ...showBarcodeModal, codigoBarras: code };
       setProducts(prev => prev.map(p => p.id === showBarcodeModal.id ? updated : p));
       if (isOnline) {
-        await supabase.from('products').update({ codigo_barras: code }).eq('id', showBarcodeModal.id);
+        const { error } = await supabase.from('products').update({ codigo_barras: code }).eq('id', showBarcodeModal.id);
+        if (error) {
+          notify("Error al guardar el código. Reintenta.", "error");
+          setProducts(prev => prev.map(p => p.id === showBarcodeModal.id ? showBarcodeModal : p));
+          return;
+        }
+      } else {
+        queueOp('UPDATE_PRODUCT', fromProduct(updated, user!.id));
       }
     }
 
@@ -2439,35 +2466,21 @@ export default function App() {
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => {
-                      const sinCodigo = products.filter(p => !p.codigoBarras);
-                      if (sinCodigo.length > 0) openBarcodeModal(sinCodigo[0]);
-                      else notify("Todos los productos ya tienen código de barras.", "info");
+                      const conCodigo = products.filter(p => p.codigoBarras);
+                      if (conCodigo.length > 0) openBarcodeModal(conCodigo[0]);
+                      else notify("Ningún producto tiene código de barras aún. Agrégalo al crear el producto.", "info");
                     }}
-                    className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm rounded-xl border border-slate-200 transition flex items-center gap-2 cursor-pointer shadow-sm"
+                    className="py-2.5 px-4 bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold text-sm rounded-xl border border-blue-200 transition flex items-center gap-2 cursor-pointer shadow-sm"
                   >
-                    <Barcode className="w-4 h-4" />
-                    <span>Código</span>
+                    <Printer className="w-4 h-4" />
+                    <span>Imprimir</span>
                   </button>
-                  {showAddCategoryInput ? (
-                    <form onSubmit={e => { e.preventDefault(); addCategory(newCategoryName); }} className="flex gap-1">
-                      <input
-                        autoFocus
-                        value={newCategoryName}
-                        onChange={e => setNewCategoryName(e.target.value)}
-                        placeholder="Nueva categoría"
-                        className="py-2.5 px-3 rounded-xl border border-slate-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-yellow-400 w-36"
-                        onBlur={() => { if (!newCategoryName.trim()) setShowAddCategoryInput(false); }}
-                      />
-                      <button type="submit" className="bg-slate-800 text-white px-3 rounded-xl font-bold text-sm cursor-pointer shrink-0">+</button>
-                    </form>
-                  ) : (
-                    <button
-                      onClick={() => setShowAddCategoryInput(true)}
-                      className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold text-sm rounded-xl border border-slate-200 cursor-pointer shrink-0 transition shadow-sm"
-                    >
-                      + Categoría
-                    </button>
-                  )}
+                  <button
+                    onClick={() => setShowCategoryModal(true)}
+                    className="py-2.5 px-4 bg-violet-50 hover:bg-violet-100 text-violet-700 font-bold text-sm rounded-xl border border-violet-200 cursor-pointer shrink-0 transition shadow-sm"
+                  >
+                    + Categoría
+                  </button>
                   <button
                     id="tour-inv-foto"
                     onClick={() => setShowAiPhotoModal(true)}
@@ -3253,13 +3266,25 @@ export default function App() {
                 </div>
                 <div>
                   <label className="block text-slate-500 font-bold mb-1 font-sans">Código de Barras</label>
-                  <input
-                    type="text"
-                    value={newProduct.codigoBarras}
-                    onChange={(e) => setNewProduct({ ...newProduct, codigoBarras: e.target.value })}
-                    placeholder="Escanear o tipear"
-                    className="w-full bg-slate-50 p-2.5 rounded-lg border border-slate-200 font-mono"
-                  />
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={newProduct.codigoBarras}
+                      onChange={(e) => setNewProduct({ ...newProduct, codigoBarras: e.target.value })}
+                      placeholder="Escanear o tipear"
+                      className="flex-1 bg-slate-50 p-2.5 rounded-lg border border-slate-200 font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const code = "CG" + String(Math.floor(100000000000 + Math.random() * 900000000000));
+                        setNewProduct(prev => ({ ...prev, codigoBarras: code }));
+                      }}
+                      className="px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm rounded-lg border border-slate-200 transition cursor-pointer shrink-0"
+                    >
+                      Auto
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -4046,6 +4071,77 @@ export default function App() {
       />}
 
 
+      {/* Modal: Gestionar categorías */}
+      {showCategoryModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-6 flex flex-col gap-4 max-h-[85vh]">
+            <div className="flex items-center justify-between">
+              <h2 className="font-bold text-slate-800 text-lg">Categorías</h2>
+              <button onClick={() => { setShowCategoryModal(false); setEditingCategory(null); setNewCategoryName(""); }} className="p-2 hover:bg-slate-100 rounded-xl cursor-pointer">
+                <X className="w-5 h-5 text-slate-400" />
+              </button>
+            </div>
+
+            {/* Lista de categorías */}
+            <div className="flex flex-col gap-1 overflow-y-auto">
+              {allCategories.filter(c => c !== "Todos").map(cat => {
+                const isEditing = editingCategory?.original === cat;
+                return (
+                  <div key={cat} className="flex items-center gap-2 py-2 px-3 rounded-xl hover:bg-slate-50 group">
+                    {isEditing ? (
+                      <form onSubmit={e => { e.preventDefault(); renameCategory(cat, editingCategory.value); }} className="flex flex-1 gap-2">
+                        <input
+                          autoFocus
+                          value={editingCategory.value}
+                          onChange={e => setEditingCategory({ ...editingCategory, value: e.target.value })}
+                          className="flex-1 bg-slate-50 border border-yellow-400 rounded-lg px-3 py-1.5 text-sm focus:outline-none"
+                        />
+                        <button type="submit" className="bg-slate-800 text-white px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer">Guardar</button>
+                        <button type="button" onClick={() => setEditingCategory(null)} className="text-slate-400 px-2 cursor-pointer text-xs">✕</button>
+                      </form>
+                    ) : (
+                      <>
+                        <span className="flex-1 text-sm font-semibold text-slate-700">{cat}</span>
+                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition">
+                          <button
+                            onClick={() => setEditingCategory({ original: cat, value: cat })}
+                            className="p-1.5 hover:bg-yellow-50 rounded-lg text-slate-400 hover:text-yellow-600 cursor-pointer transition"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => { setShowCategoryModal(false); deleteCategory(cat); }}
+                            className="p-1.5 hover:bg-rose-50 rounded-lg text-slate-400 hover:text-rose-500 cursor-pointer transition"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Crear nueva */}
+            <div className="border-t border-slate-100 pt-4">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wide block mb-2">Nueva categoría</label>
+              <form onSubmit={e => { e.preventDefault(); addCategory(newCategoryName); }} className="flex gap-2">
+                <input
+                  value={newCategoryName}
+                  onChange={e => setNewCategoryName(e.target.value)}
+                  placeholder="Nombre..."
+                  className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                />
+                <button type="submit" disabled={!newCategoryName.trim()} className="bg-yellow-400 hover:bg-yellow-300 disabled:opacity-40 text-slate-900 font-bold px-4 rounded-xl text-sm cursor-pointer transition">
+                  Crear
+                </button>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Modal: Código de barras */}
       {showBarcodeModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
@@ -4062,7 +4158,7 @@ export default function App() {
               </button>
             </div>
 
-            {/* Selector de producto */}
+            {/* Selector de producto — solo los que tienen código */}
             <select
               value={showBarcodeModal.id}
               onChange={e => {
@@ -4071,8 +4167,8 @@ export default function App() {
               }}
               className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-yellow-400"
             >
-              {products.map(p => (
-                <option key={p.id} value={p.id}>{p.nombre}{!p.codigoBarras ? " — sin código" : ""}</option>
+              {products.filter(p => p.codigoBarras).map(p => (
+                <option key={p.id} value={p.id}>{p.nombre}</option>
               ))}
             </select>
 
