@@ -60,7 +60,7 @@ const uuid = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => 
   return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
 });
 
-const categories = ["Todos", "Semillas", "Nutrientes", "Sustratos", "Iluminación", "Equipamiento", "Papeles y Filtros", "CBD", "Accesorios", "Otros"];
+const DEFAULT_CATEGORIES = ["Semillas", "Nutrientes", "Sustratos", "Iluminación", "Equipamiento", "Papeles y Filtros", "CBD", "Accesorios", "Otros"];
 
 const detectCategoria = (text: string): string => {
   const t = text.toLowerCase();
@@ -145,12 +145,7 @@ export default function App() {
   const [searchTerm, setSearchTerm] = useState("");
   const [barcodeSearch, setBarcodeSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string>("Todos");
-  const [customCategories, setCustomCategories] = useState<string[]>(() => {
-    try { return JSON.parse(localStorage.getItem('custom_categories') || '[]'); } catch { return []; }
-  });
-  const [deletedCategories, setDeletedCategories] = useState<string[]>(() => {
-    try { return JSON.parse(localStorage.getItem('deleted_categories') || '[]'); } catch { return []; }
-  });
+  const [userCategories, setUserCategories] = useState<{ id: string; name: string }[]>([]);
   const [showAddCategoryInput, setShowAddCategoryInput] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [showCategoryModal, setShowCategoryModal] = useState(false);
@@ -202,61 +197,63 @@ export default function App() {
   const [upgradeShowPassword, setUpgradeShowPassword] = useState(false);
   const [upgradeLoading, setUpgradeLoading] = useState(false);
 
-  const productCategories = products.map(p => p.categoria).filter(c => c && !categories.includes(c) && !customCategories.includes(c));
-  const allCategories = [
-    "Todos",
-    ...categories.filter(c => c !== "Todos" && !deletedCategories.includes(c)),
-    ...customCategories.filter(c => !deletedCategories.includes(c)),
-    ...Array.from(new Set(productCategories)).filter(c => !deletedCategories.includes(c)),
-  ];
+  const userCategoryNames = userCategories.map(c => c.name);
+  // Categorías en productos que aún no están en userCategories (compatibilidad con datos viejos)
+  const orphanCategories = Array.from(new Set(products.map(p => p.categoria).filter(c => c && !userCategoryNames.includes(c))));
+  const allCategories = ["Todos", ...userCategoryNames, ...orphanCategories];
 
-  const addCategory = (name: string) => {
+  const addCategory = async (name: string) => {
     const trimmed = name.trim();
     if (!trimmed || allCategories.includes(trimmed)) return;
-    setCustomCategories(prev => {
-      const updated = [...prev, trimmed];
-      localStorage.setItem('custom_categories', JSON.stringify(updated));
-      return updated;
-    });
-    // Si era una predefinida eliminada, restaurarla del registro de eliminadas
-    setDeletedCategories(prev => {
-      const updated = prev.filter(c => c !== trimmed);
-      localStorage.setItem('deleted_categories', JSON.stringify(updated));
-      return updated;
-    });
+    if (!user) return;
+    const tempId = uuid();
+    setUserCategories(prev => [...prev, { id: tempId, name: trimmed }]);
     setNewCategoryName("");
-    setShowAddCategoryInput(false);
+    const { data, error } = await supabase.from('categories').insert({ user_id: user.id, name: trimmed }).select().single();
+    if (error) {
+      setUserCategories(prev => prev.filter(c => c.id !== tempId));
+      notify("Error al crear la categoría.", "error");
+      return;
+    }
+    setUserCategories(prev => prev.map(c => c.id === tempId ? { id: data.id, name: trimmed } : c));
   };
 
   const renameCategory = async (oldName: string, newName: string) => {
     const trimmed = newName.trim();
     if (!trimmed || trimmed === oldName) return;
+    if (!user) return;
 
-    // Actualizar categorías personalizadas
-    setCustomCategories(prev => {
-      const updated = prev.filter(c => c !== oldName);
-      if (!updated.includes(trimmed)) updated.push(trimmed);
-      localStorage.setItem('custom_categories', JSON.stringify(updated));
-      return updated;
-    });
+    // Actualizar estado local optimistamente
+    setUserCategories(prev => prev.map(c => c.name === oldName ? { ...c, name: trimmed } : c));
     if (selectedCategory === oldName) setSelectedCategory(trimmed);
     setEditingCategory(null);
 
-    // Actualizar productos afectados
-    const affected = productsRef.current.filter(p => p.categoria === oldName);
-    if (affected.length > 0) {
-      setProducts(prev => prev.map(p => p.categoria === oldName ? { ...p, categoria: trimmed } : p));
-      if (isOnline) {
+    if (isOnline) {
+      // Renombrar en Supabase: borrar vieja e insertar nueva
+      await supabase.from('categories').delete().eq('name', oldName).eq('user_id', user.id);
+      const { error: insErr } = await supabase.from('categories').insert({ user_id: user.id, name: trimmed });
+      if (insErr) {
+        setUserCategories(prev => prev.map(c => c.name === trimmed ? { ...c, name: oldName } : c));
+        notify("Error al renombrar la categoría. Reintenta.", "error");
+        return;
+      }
+      // Actualizar productos afectados
+      const affected = productsRef.current.filter(p => p.categoria === oldName);
+      if (affected.length > 0) {
+        setProducts(prev => prev.map(p => p.categoria === oldName ? { ...p, categoria: trimmed } : p));
         const results = await Promise.all(affected.map(p =>
           supabase.from('products').update({ categoria: trimmed }).eq('id', p.id)
         ));
-        const anyError = results.find(r => r.error);
-        if (anyError) {
+        if (results.find(r => r.error)) {
           notify("Error al renombrar en algunos productos. Reintenta.", "error");
           return;
         }
-      } else {
-        affected.forEach(p => queueOp('UPDATE_PRODUCT', fromProduct({ ...p, categoria: trimmed }, user!.id)));
+      }
+    } else {
+      const affected = productsRef.current.filter(p => p.categoria === oldName);
+      if (affected.length > 0) {
+        setProducts(prev => prev.map(p => p.categoria === oldName ? { ...p, categoria: trimmed } : p));
+        affected.forEach(p => queueOp('UPDATE_PRODUCT', fromProduct({ ...p, categoria: trimmed }, user.id)));
       }
     }
     notify("Categoría renombrada.", "success");
@@ -266,18 +263,11 @@ export default function App() {
     setConfirmModal({
       message: `¿Eliminar la categoría "${cat}"? Los productos quedarán como "Otros".`,
       onConfirm: async () => {
-        // Usar functional updater y productsRef para evitar closures viejas
-        setCustomCategories(prev => {
-          const updated = prev.filter(c => c !== cat);
-          localStorage.setItem('custom_categories', JSON.stringify(updated));
-          return updated;
-        });
-        setDeletedCategories(prev => {
-          const updated = prev.includes(cat) ? prev : [...prev, cat];
-          localStorage.setItem('deleted_categories', JSON.stringify(updated));
-          return updated;
-        });
+        setUserCategories(prev => prev.filter(c => c.name !== cat));
         if (selectedCategory === cat) setSelectedCategory("Todos");
+        if (isOnline) {
+          await supabase.from('categories').delete().eq('name', cat).eq('user_id', user!.id);
+        }
 
         const affected = productsRef.current.filter(p => p.categoria === cat);
         if (affected.length > 0) {
@@ -407,6 +397,16 @@ export default function App() {
       isLoadingRef.current = true;
       pendingReloadRef.current = false;
 
+      // Cargar categorías — sembrar predefinidas si el usuario no tiene ninguna
+      const { data: cats } = await supabase.from('categories').select('*').eq('user_id', user.id).order('created_at', { ascending: true });
+      if (!cats || cats.length === 0) {
+        const seed = DEFAULT_CATEGORIES.map(name => ({ user_id: user.id, name }));
+        const { data: seeded } = await supabase.from('categories').insert(seed).select();
+        setUserCategories(seeded ? seeded.map((c: any) => ({ id: c.id, name: c.name })) : []);
+      } else {
+        setUserCategories(cats.map((c: any) => ({ id: c.id, name: c.name })));
+      }
+
       const { data: prods, error: prodErr } = await supabase
         .from('products')
         .select('*')
@@ -439,9 +439,14 @@ export default function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'sale_items' }, loadAll)
       .subscribe();
 
+    const catsSub = supabase.channel('rt-categories')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'categories' }, loadAll)
+      .subscribe();
+
     return () => {
       prodsSub.unsubscribe();
       salesSub.unsubscribe();
+      catsSub.unsubscribe();
     };
   }, [user]);
 
@@ -2587,7 +2592,7 @@ export default function App() {
                       <option key={cat} value={cat}>{cat}</option>
                     ))}
                   </select>
-                  {selectedCategory !== "Todos" && !categories.includes(selectedCategory) && (
+                  {selectedCategory !== "Todos" && selectedCategory !== "Otros" && (
                     <button
                       onClick={() => deleteCategory(selectedCategory)}
                       className="p-3 bg-rose-50 hover:bg-rose-100 text-rose-500 rounded-xl transition cursor-pointer shrink-0"
