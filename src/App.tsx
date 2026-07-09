@@ -232,19 +232,28 @@ export default function App() {
 
   const deleteCategory = (cat: string) => {
     setConfirmModal({
-      message: `¿Eliminar la categoría "${cat}"? Los productos de esta categoría quedarán como "Otros".`,
+      message: `¿Eliminar la categoría "${cat}"? Los productos quedarán como "Otros".`,
       onConfirm: async () => {
-        const affected = products.filter(p => p.categoria === cat);
+        // Usar functional updater y productsRef para evitar closures viejas
+        setCustomCategories(prev => {
+          const updated = prev.filter(c => c !== cat);
+          localStorage.setItem('custom_categories', JSON.stringify(updated));
+          return updated;
+        });
+        if (selectedCategory === cat) setSelectedCategory("Todos");
+
+        const affected = productsRef.current.filter(p => p.categoria === cat);
         if (affected.length > 0) {
           setProducts(prev => prev.map(p => p.categoria === cat ? { ...p, categoria: "Otros" } : p));
-          await Promise.all(affected.map(p =>
-            supabase.from('products').update({ categoria: "Otros" }).eq('id', p.id)
-          ));
+          if (isOnline) {
+            await Promise.all(affected.map(p =>
+              supabase.from('products').update({ categoria: "Otros" }).eq('id', p.id)
+            ));
+          } else {
+            affected.forEach(p => queueOp('UPDATE_PRODUCT', fromProduct({ ...p, categoria: "Otros" }, user!.id)));
+          }
         }
-        const updated = customCategories.filter(c => c !== cat);
-        setCustomCategories(updated);
-        localStorage.setItem('custom_categories', JSON.stringify(updated));
-        if (selectedCategory === cat) setSelectedCategory("Todos");
+        notify("Categoría eliminada.", "success");
       }
     });
   };
