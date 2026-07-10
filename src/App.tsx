@@ -12,7 +12,6 @@ import {
   CheckCircle,
   AlertCircle,
   X,
-  ChevronRight,
   Coins,
   HelpCircle,
   Sparkles,
@@ -37,8 +36,7 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { supabase, toProduct, fromProduct, toSale } from "./supabase";
 import type { User as SupabaseUser } from "@supabase/supabase-js";
-import { Product, Sale, SaleItem, DictationResult } from "./types";
-import { parsearVentaLocal } from "./parser";
+import { Product, Sale, SaleItem } from "./types";
 import AuthScreen from "./AuthScreen";
 import { BrowserMultiFormatReader } from "@zxing/browser";
 import Quagga from "@ericblade/quagga2";
@@ -132,11 +130,6 @@ export default function App() {
   // UI state - Notifications
   const [notification, setNotification] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
 
-  // Text AI Assistant State
-  const [voiceCommandText, setVoiceCommandText] = useState("");
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [analysisResult, setAnalysisResult] = useState<DictationResult | null>(null);
-
   // POS / Cart State
   const [cart, setCart] = useState<SaleItem[]>([]);
   const [lastSale, setLastSale] = useState<Sale | null>(null);
@@ -160,9 +153,6 @@ export default function App() {
   const barcodeRef = useRef<SVGSVGElement>(null);
 
   const [lowStockAlert, setLowStockAlert] = useState<{ nombre: string; stock: number; stockMinimo: number; unidadMedida: string }[]>([]);
-
-  // Venta rápida expandible
-  const [showVentaRapida, setShowVentaRapida] = useState(false);
 
   // Modals & Form State
   const [showAddProductModal, setShowAddProductModal] = useState(false);
@@ -748,25 +738,6 @@ export default function App() {
     }
   };
 
-  const analyzeVoiceCommand = () => {
-    if (!voiceCommandText.trim()) {
-      notify("Debes escribir un comando primero.", "info");
-      return;
-    }
-    setIsAnalyzing(true);
-    setAnalysisResult(null);
-    try {
-      const result = parsearVentaLocal(voiceCommandText, products);
-      setAnalysisResult(result);
-      notify("¡Listo! Revisa los productos y confirma.", "success");
-    } catch (err) {
-      console.error("Error al parsear:", err);
-      notify("No se pudo interpretar el texto. Intenta escribirlo más claro.", "error");
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
   const printReceipt = (sale: Sale) => {
     const dateStr = new Date(sale.fecha).toLocaleString('es-CL', {
       day: '2-digit', month: '2-digit', year: 'numeric',
@@ -811,103 +782,6 @@ export default function App() {
     setTimeout(() => { w.focus(); w.print(); }, 700);
   };
 
-
-  // Apply parsed Gemini instructions into the actual cart or stocks
-  const applyDictationResult = async () => {
-    if (!analysisResult) return;
-
-    const { accion, items, metodoPago } = analysisResult;
-
-    if (accion === "venta") {
-      // 1. Clear cart
-      const newCartItems: SaleItem[] = [];
-
-      items.forEach((item) => {
-        // Find best match in database
-        const match = products.find(p => 
-          p.nombre.toLowerCase().includes(item.nombre.toLowerCase()) || 
-          item.nombre.toLowerCase().includes(p.nombre.toLowerCase())
-        );
-
-        if (match) {
-          newCartItems.push({
-            id: match.id,
-            nombre: match.nombre,
-            cantidad: item.cantidad,
-            precioUnitario: match.precioVenta,
-            subtotal: match.precioVenta * item.cantidad,
-            unidadMedida: match.unidadMedida
-          });
-        } else {
-          // If product is unrecognized, generate a generic item so they can sell it anyway!
-          const estPrice = item.precioUnitarioEstimado || 1000; // default to safe 1000 CLP if no clue
-          newCartItems.push({
-            nombre: `${item.nombre} (Genérico IA)`,
-            cantidad: item.cantidad,
-            precioUnitario: estPrice,
-            subtotal: estPrice * item.cantidad,
-            unidadMedida: item.unidadMedida || "unidades"
-          });
-        }
-      });
-
-      setCart(newCartItems);
-
-      // Metodo Pago
-      const matchPago = metodoPago as any;
-      if (["Efectivo", "Débito", "Crédito", "Transferencia"].includes(matchPago)) {
-        setPaymentMethod(matchPago);
-      } else {
-        setPaymentMethod("Efectivo");
-      }
-
-      notify("Venta rápida cargada en la caja.", "success");
-      setActiveTab("caja");
-
-    } else if (accion === "abastecer") {
-      let updatedCount = 0;
-      const now = new Date().toISOString();
-      const stockUpdates: { id: string; stock: number; updated_at: string }[] = [];
-
-      const previousProducts = productsRef.current;
-      const updatedProducts = products.map((prod) => {
-        const matchedItem = items.find(item =>
-          prod.nombre.toLowerCase().includes(item.nombre.toLowerCase()) ||
-          item.nombre.toLowerCase().includes(prod.nombre.toLowerCase())
-        );
-        if (matchedItem) {
-          updatedCount++;
-          const newStock = prod.stock + matchedItem.cantidad;
-          stockUpdates.push({ id: prod.id, stock: newStock, updated_at: now });
-          return { ...prod, stock: newStock, updatedAt: now };
-        }
-        return prod;
-      });
-
-      setProducts(updatedProducts);
-
-      if (isOnline) {
-        const results = await Promise.all(
-          stockUpdates.map(u =>
-            supabase.from('products').update({ stock: u.stock, updated_at: u.updated_at }).eq('id', u.id)
-          )
-        );
-        const anyError = results.find(r => r.error);
-        if (anyError) {
-          setProducts(previousProducts);
-          notify("Error al guardar los cambios de stock. Reintenta.", "error");
-          return;
-        }
-      } else {
-        stockUpdates.forEach(u => queueOp('UPDATE_STOCK', u));
-      }
-
-      notify(`Se abastecieron ${updatedCount} productos en catálogo.`, "success");
-      setAnalysisResult(null);
-      setVoiceCommandText("");
-      setActiveTab("inventario");
-    }
-  };
 
   // Add Product manual action
   const handleAddProduct = async (e: React.FormEvent) => {
@@ -1594,7 +1468,6 @@ export default function App() {
     setProducts(updatedProducts);
     setCart([]);
     setLastSale(completedSale);
-    setAnalysisResult(null);
     setCashAmount("");
     setDiscountPct(0);
     setTimeout(() => barcodeInputRef.current?.focus(), 100);
@@ -1844,13 +1717,6 @@ export default function App() {
       placement: 'top',
       title: 'Catálogo de productos',
       content: 'Toca cualquier tarjeta para agregarla al carrito. Cada clic suma una unidad más.',
-      skipBeacon: true,
-    },
-    {
-      target: '#tour-modo-avanzado',
-      placement: 'top',
-      title: 'Venta por texto ✨',
-      content: 'Describe la venta con tus palabras: «2 papeles OCB y un grinder con débito». La app lo entiende.',
       skipBeacon: true,
     },
     {
@@ -2333,94 +2199,6 @@ export default function App() {
                     );
                   })()}
 
-                  {/* Modo avanzado: venta rápida por texto */}
-                  <div id="tour-modo-avanzado" className="border-t border-slate-100 pt-3">
-                    <button
-                      onClick={() => setShowVentaRapida(v => !v)}
-                      className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-yellow-600 transition cursor-pointer"
-                    >
-                      <Sparkles className="w-3.5 h-3.5" />
-                      <span>{showVentaRapida ? 'Ocultar modo avanzado' : 'Modo avanzado: registrar venta por texto'}</span>
-                      <ChevronRight className={`w-3.5 h-3.5 transition-transform ${showVentaRapida ? 'rotate-90' : ''}`} />
-                    </button>
-
-                    {showVentaRapida && (
-                      <motion.div
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: 'auto' }}
-                        exit={{ opacity: 0, height: 0 }}
-                        className="bg-slate-900 text-white p-4 rounded-2xl mt-3 flex flex-col gap-3"
-                      >
-                        <p className="text-xs text-slate-300">Escribe lo que vendiste en tus propias palabras:</p>
-
-                        <div className="flex flex-wrap gap-1.5">
-                          {["2 cafés y 1 jugo", "Una bebida y papas fritas", "3 productos con débito"].map(ej => (
-                            <button
-                              key={ej}
-                              onClick={() => setVoiceCommandText(ej)}
-                              className="text-[11px] bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1.5 rounded-full transition cursor-pointer border border-slate-600"
-                            >
-                              {ej}
-                            </button>
-                          ))}
-                        </div>
-
-                        <div className="flex gap-2">
-                          <input
-                            type="text"
-                            value={voiceCommandText}
-                            onChange={(e) => setVoiceCommandText(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && !isAnalyzing && voiceCommandText.trim() && analyzeVoiceCommand()}
-                            placeholder="Ej: dos marraquetas y una leche..."
-                            className="flex-1 bg-slate-950 py-3 px-4 rounded-2xl text-white placeholder-slate-500 font-medium text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 transition"
-                          />
-                          <button
-                            onClick={analyzeVoiceCommand}
-                            disabled={isAnalyzing || !voiceCommandText.trim()}
-                            className="bg-yellow-400 hover:bg-yellow-300 disabled:opacity-40 text-white py-3 px-5 font-extrabold rounded-2xl transition cursor-pointer shrink-0"
-                          >
-                            {isAnalyzing ? "..." : "Listo"}
-                          </button>
-                        </div>
-
-                        {analysisResult && (
-                          <motion.div
-                            initial={{ opacity: 0, y: 6 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            className="bg-slate-950 border border-slate-700 rounded-2xl p-4 flex flex-col gap-3"
-                          >
-                            <div className="flex justify-between items-center">
-                              <span className="font-bold text-amber-400 text-sm flex items-center gap-1.5">
-                                <CheckCircle className="w-4 h-4" /> ¿Es esto lo que vendiste?
-                              </span>
-                              <button onClick={() => setAnalysisResult(null)} className="text-slate-400 hover:text-white cursor-pointer">
-                                <X className="w-4 h-4" />
-                              </button>
-                            </div>
-                            <div className="flex flex-col gap-1">
-                              {analysisResult.items?.map((it, idx) => (
-                                <div key={idx} className="flex items-center gap-2 text-sm text-white">
-                                  <span className="bg-yellow-500 text-slate-900 font-bold px-2 py-0.5 rounded-lg text-xs">{it.cantidad}</span>
-                                  <span>{it.nombre}</span>
-                                </div>
-                              ))}
-                              <div className="text-xs text-slate-400 mt-1">
-                                Pago: <span className="text-slate-200 font-semibold">{analysisResult.metodoPago}</span>
-                                {" · "}
-                                {analysisResult.accion === "venta" ? "Venta" : "Abono de stock"}
-                              </div>
-                            </div>
-                            <button
-                              onClick={applyDictationResult}
-                              className="w-full bg-yellow-400 hover:bg-yellow-300 text-white py-2.5 font-bold rounded-xl transition cursor-pointer text-sm"
-                            >
-                              Sí, agregar a la boleta
-                            </button>
-                          </motion.div>
-                        )}
-                      </motion.div>
-                    )}
-                  </div>
                 </div>
 
               </div>
