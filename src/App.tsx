@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { useRegisterSW } from 'virtual:pwa-register/react';
 import {
   Plus,
   Search,
@@ -92,6 +93,8 @@ const detectCategoria = (text: string): string => {
 };
 
 export default function App() {
+  const { needRefresh: [needRefresh], updateServiceWorker } = useRegisterSW();
+
   // Dark mode
   const [isDark, setIsDark] = useState(() => localStorage.getItem('almacen_dark') === 'true');
 
@@ -4294,6 +4297,19 @@ export default function App() {
             </div>
 
           </div>
+        </div>
+      )}
+
+      {/* Banner de nueva versión disponible */}
+      {needRefresh && (
+        <div className="fixed bottom-24 left-4 right-4 md:left-auto md:right-6 md:w-80 bg-slate-900 text-white px-4 py-3 rounded-2xl shadow-2xl flex items-center justify-between gap-3 z-[100]">
+          <p className="text-sm font-semibold">Nueva versión disponible</p>
+          <button
+            onClick={() => updateServiceWorker(true)}
+            className="bg-amber-400 hover:bg-amber-300 text-slate-900 font-bold text-sm px-4 py-1.5 rounded-xl shrink-0 transition cursor-pointer"
+          >
+            Actualizar
+          </button>
         </div>
       )}
 
