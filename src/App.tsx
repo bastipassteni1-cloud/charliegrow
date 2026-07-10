@@ -485,9 +485,13 @@ export default function App() {
   // Recargar datos al volver al tab (el usuario puede haber estado en otra app)
   useEffect(() => {
     const onFocus = () => { if (isOnline && reloadRef.current) reloadRef.current(); };
+    const onVisibility = () => { if (!document.hidden && isOnline) reloadRef.current?.(); };
     window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', () => { if (!document.hidden && isOnline) reloadRef.current?.(); });
-    return () => window.removeEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, [isOnline]);
 
   // Mantener productsRef siempre actualizado
@@ -880,6 +884,14 @@ export default function App() {
       return;
     }
 
+    if (newProduct.codigoBarras.trim()) {
+      const dup = productsRef.current.find(p => p.codigoBarras === newProduct.codigoBarras.trim());
+      if (dup) {
+        notify(`El código "${newProduct.codigoBarras.trim()}" ya está asignado a "${dup.nombre}".`, "error");
+        return;
+      }
+    }
+
     const pCompra = parseInt(newProduct.precioCompra) || 0;
     const pVenta = parseInt(newProduct.precioVenta) || 0;
     const stockQty = parseFloat(newProduct.stock) || 0;
@@ -1054,6 +1066,7 @@ export default function App() {
           blob = await heic2any({ blob: file, toType: "image/jpeg", quality: 0.9 }) as Blob;
         } catch {
           notify("No se pudo convertir la foto. Intenta con JPG.", "error");
+          setIsScanningCartPhoto(false);
           return;
         }
       }
@@ -1209,6 +1222,14 @@ export default function App() {
       return;
     }
 
+    if (aiAnalyzedProduct.codigoBarras?.trim()) {
+      const dup = productsRef.current.find(p => p.codigoBarras === aiAnalyzedProduct.codigoBarras.trim());
+      if (dup) {
+        notify(`El código "${aiAnalyzedProduct.codigoBarras.trim()}" ya está asignado a "${dup.nombre}".`, "error");
+        return;
+      }
+    }
+
     const pCompra = parseInt(aiProductPriceCompra) || 0;
     const pVenta = parseInt(aiProductPriceVenta) || 0;
     const stockQty = parseFloat(aiProductStock) || 0;
@@ -1285,6 +1306,15 @@ export default function App() {
       notify("El nombre y el precio de venta son obligatorios.", "error");
       return;
     }
+
+    if (editForm.codigoBarras.trim()) {
+      const dup = productsRef.current.find(p => p.codigoBarras === editForm.codigoBarras.trim() && p.id !== showEditStockModal.id);
+      if (dup) {
+        notify(`El código "${editForm.codigoBarras.trim()}" ya está asignado a "${dup.nombre}".`, "error");
+        return;
+      }
+    }
+
     const originalProduct = showEditStockModal; // capture before clearing
 
     const updatedProduct: Product = {
@@ -1337,6 +1367,11 @@ export default function App() {
 
     // Guardar código en producto si cambió
     if (code !== showBarcodeModal.codigoBarras) {
+      const dup = productsRef.current.find(p => p.codigoBarras === code && p.id !== showBarcodeModal.id);
+      if (dup) {
+        notify(`El código "${code}" ya está asignado a "${dup.nombre}".`, "error");
+        return;
+      }
       const updated = { ...showBarcodeModal, codigoBarras: code };
       setProducts(prev => prev.map(p => p.id === showBarcodeModal.id ? updated : p));
       if (isOnline) {
@@ -1583,9 +1618,12 @@ export default function App() {
         supabase.from('products').update({ stock: u.stock, updated_at: u.updated_at }).eq('id', u.id)
       ));
       const stockErr = stockResults.find(r => r.error);
-      if (stockErr) console.error("Stock update partial failure:", stockErr.error);
-
-      notify("¡Venta registrada! Stock actualizado.", "success");
+      if (stockErr) {
+        console.error("Stock update partial failure:", stockErr.error);
+        notify("Venta registrada, pero hubo un error al actualizar el stock. Revisa el inventario.", "error");
+      } else {
+        notify("¡Venta registrada! Stock actualizado.", "success");
+      }
     } catch (err) {
       console.error("Checkout failed:", err);
       setSales(prev => prev.filter(s => s.id !== saleId));
