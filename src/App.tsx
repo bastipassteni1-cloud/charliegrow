@@ -430,6 +430,11 @@ export default function App() {
     setSyncError(null);
 
     const loadAll = async (): Promise<boolean> => {
+      // Si no hay internet, usar cache silenciosamente sin mostrar error
+      if (!navigator.onLine) {
+        setIsSyncing(false);
+        return false;
+      }
       if (isLoadingRef.current) { pendingReloadRef.current = true; return true; }
       isLoadingRef.current = true;
       pendingReloadRef.current = false;
@@ -490,10 +495,10 @@ export default function App() {
       return true;
     };
 
-    // Punto 6: retry automático con backoff (3s → 6s → 12s)
+    // Punto 6: retry automático con backoff (3s → 6s → 12s) — solo si hay internet
     const loadWithRetry = async (attempt = 0) => {
       const ok = await loadAll();
-      if (!ok && attempt < 2) {
+      if (!ok && attempt < 2 && navigator.onLine) {
         setTimeout(() => loadWithRetry(attempt + 1), 3000 * Math.pow(2, attempt));
       }
     };
