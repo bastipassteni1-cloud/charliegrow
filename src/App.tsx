@@ -60,6 +60,18 @@ const uuid = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => 
 
 const DEFAULT_CATEGORIES = ["Semillas", "Nutrientes", "Sustratos", "Iluminación", "Equipamiento", "Papeles y Filtros", "CBD", "Accesorios", "Otros"];
 
+// Punto 5: verificación real de conectividad — no se fía solo de navigator.onLine
+const checkRealConnectivity = async (): Promise<boolean> => {
+  if (!navigator.onLine) return false;
+  try {
+    const check = supabase.from('categories').select('id').limit(1);
+    const timeout = new Promise<false>(resolve => setTimeout(() => resolve(false), 4000));
+    return await Promise.race([check.then(({ error }) => !error), timeout]);
+  } catch {
+    return false;
+  }
+};
+
 const detectCategoria = (text: string): string => {
   const t = text.toLowerCase();
   if (/semilla|seed|cannabis|marihuana|feminiz|autoflow|indica|sativa|hybrid|kush|haze|og |gorilla|gelato|zkittlez|runtz|wedding cake|bruce banner|northern light|white widow/i.test(t))
@@ -110,7 +122,7 @@ export default function App() {
   const isSyncingRef = useRef(false);
   const isLoadingRef = useRef(false);
   const pendingReloadRef = useRef(false);
-  const reloadRef = useRef<() => Promise<void>>(async () => {});
+  const reloadRef = useRef<() => Promise<boolean>>(async () => true);
 
   // Live camera scanner
   const [showLiveScanner, setShowLiveScanner] = useState(false);
@@ -120,6 +132,8 @@ export default function App() {
   const productsRef = useRef<Product[]>([]);
   const pendingInsertIds = useRef<Set<string>>(new Set());
   const isCheckingOutRef = useRef(false);
+  const lastLoadTimeRef = useRef<number>(0);       // Punto 4: throttle focus/visibility
+  const reloadDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null); // Punto 3: debounce realtime
 
   // Escaneo de carrito por foto (no requiere HTTPS)
   const [isScanningCartPhoto, setIsScanningCartPhoto] = useState(false);
@@ -398,11 +412,22 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
 
+    // Punto 1: mostrar datos cacheados de inmediato mientras carga Supabase
+    const ck = (t: string) => `cg_${t}_${user.id}`;
+    try {
+      const cp = localStorage.getItem(ck('products'));
+      if (cp) setProducts(JSON.parse(cp));
+      const cc = localStorage.getItem(ck('cats'));
+      if (cc) setUserCategories(JSON.parse(cc));
+      const cs = localStorage.getItem(ck('sales'));
+      if (cs) setSales(JSON.parse(cs));
+    } catch {}
+
     setIsSyncing(true);
     setSyncError(null);
 
-    const loadAll = async () => {
-      if (isLoadingRef.current) { pendingReloadRef.current = true; return; }
+    const loadAll = async (): Promise<boolean> => {
+      if (isLoadingRef.current) { pendingReloadRef.current = true; return true; }
       isLoadingRef.current = true;
       pendingReloadRef.current = false;
 
@@ -411,9 +436,13 @@ export default function App() {
       if (!cats || cats.length === 0) {
         const seed = DEFAULT_CATEGORIES.map(name => ({ user_id: user.id, name }));
         const { data: seeded } = await supabase.from('categories').insert(seed).select();
-        setUserCategories(seeded ? seeded.map((c: any) => ({ id: c.id, name: c.name })) : []);
+        const mapped = seeded ? seeded.map((c: any) => ({ id: c.id, name: c.name })) : [];
+        setUserCategories(mapped);
+        try { localStorage.setItem(ck('cats'), JSON.stringify(mapped)); } catch {}
       } else {
-        setUserCategories(cats.map((c: any) => ({ id: c.id, name: c.name })));
+        const mapped = cats.map((c: any) => ({ id: c.id, name: c.name }));
+        setUserCategories(mapped);
+        try { localStorage.setItem(ck('cats'), JSON.stringify(mapped)); } catch {}
       }
 
       const { data: prods, error: prodErr } = await supabase
@@ -421,51 +450,78 @@ export default function App() {
         .select('*')
         .order('updated_at', { ascending: false });
 
-      if (prodErr) { setSyncError("Error cargando productos."); setIsSyncing(false); isLoadingRef.current = false; return; }
+      if (prodErr) {
+        setSyncError("Error cargando productos.");
+        setIsSyncing(false);
+        isLoadingRef.current = false;
+        return false;
+      }
+
+      const dbProds = prods ? prods.map(toProduct) : [];
       setProducts(prev => {
-        const dbProds = prods ? prods.map(toProduct) : [];
         const dbIds = new Set(dbProds.map(p => p.id));
-        // Conservar productos en vuelo que aún no llegaron a la DB
         const pending = prev.filter(p => pendingInsertIds.current.has(p.id) && !dbIds.has(p.id));
         return [...pending, ...dbProds];
       });
+      try { localStorage.setItem(ck('products'), JSON.stringify(dbProds)); } catch {}
 
       const { data: salesData, error: salesErr } = await supabase
         .from('sales')
         .select('*, sale_items(*)')
-        .order('fecha', { ascending: false });
+        .order('fecha', { ascending: false })
+        .limit(300);
 
       if (salesErr) {
         notify("No se pudieron cargar las ventas. Intenta recargar.", "error");
       } else if (salesData) {
-        setSales(salesData.map(toSale));
+        const mapped = salesData.map(toSale);
+        setSales(mapped);
+        try { localStorage.setItem(ck('sales'), JSON.stringify(mapped)); } catch {}
       }
+
+      lastLoadTimeRef.current = Date.now(); // Punto 4
       setIsSyncing(false);
       isLoadingRef.current = false;
 
       if (pendingReloadRef.current) loadAll();
+      return true;
+    };
+
+    // Punto 6: retry automático con backoff (3s → 6s → 12s)
+    const loadWithRetry = async (attempt = 0) => {
+      const ok = await loadAll();
+      if (!ok && attempt < 2) {
+        setTimeout(() => loadWithRetry(attempt + 1), 3000 * Math.pow(2, attempt));
+      }
+    };
+
+    // Punto 3: debounce para eventos realtime — agrupa ráfagas en una sola recarga
+    const debouncedLoad = () => {
+      if (reloadDebounceRef.current) clearTimeout(reloadDebounceRef.current);
+      reloadDebounceRef.current = setTimeout(() => loadAll(), 300);
     };
 
     reloadRef.current = loadAll;
-    loadAll();
+    loadWithRetry();
 
     const prodsSub = supabase.channel('rt-products')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, loadAll)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, debouncedLoad)
       .subscribe();
 
     const salesSub = supabase.channel('rt-sales')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales' }, loadAll)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'sale_items' }, loadAll)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales' }, debouncedLoad)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sale_items' }, debouncedLoad)
       .subscribe();
 
     const catsSub = supabase.channel('rt-categories')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'categories' }, loadAll)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'categories' }, debouncedLoad)
       .subscribe();
 
     return () => {
       prodsSub.unsubscribe();
       salesSub.unsubscribe();
       catsSub.unsubscribe();
+      if (reloadDebounceRef.current) clearTimeout(reloadDebounceRef.current);
     };
   }, [user]);
 
@@ -486,18 +542,20 @@ export default function App() {
     };
   }, []);
 
-  // Auto-sincronizar cuando vuelve la conexión
+  // Punto 2: auto-sincronizar al volver conexión O al iniciar sesión con ops pendientes
   useEffect(() => {
     if (isOnline && user && pendingOps.length > 0 && !isSyncingRef.current) {
       syncQueue(pendingOps);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOnline]);
+  }, [isOnline, user]);
 
-  // Recargar datos al volver al tab (el usuario puede haber estado en otra app)
+  // Punto 4: recargar al volver al tab solo si pasaron más de 60s desde la última carga
   useEffect(() => {
-    const onFocus = () => { if (isOnline && reloadRef.current) reloadRef.current(); };
-    const onVisibility = () => { if (!document.hidden && isOnline) reloadRef.current?.(); };
+    const THROTTLE = 60_000;
+    const shouldReload = () => isOnline && Date.now() - lastLoadTimeRef.current > THROTTLE;
+    const onFocus = () => { if (shouldReload()) reloadRef.current?.(); };
+    const onVisibility = () => { if (!document.hidden && shouldReload()) reloadRef.current?.(); };
     window.addEventListener('focus', onFocus);
     document.addEventListener('visibilitychange', onVisibility);
     return () => {
@@ -619,6 +677,9 @@ export default function App() {
 
   const syncQueue = async (ops: PendingOp[]) => {
     if (!user || ops.length === 0 || isSyncingRef.current) return;
+    // Punto 5: verificar conectividad real antes de intentar sincronizar
+    const reallyOnline = await checkRealConnectivity();
+    if (!reallyOnline) { setIsOnline(false); return; }
     isSyncingRef.current = true;
     setIsSyncingQueue(true);
     const failed: PendingOp[] = [];
