@@ -2218,6 +2218,34 @@ export default function App() {
                     </button>
                   </form>
 
+                  {/* Preview en tiempo real del producto escaneado */}
+                  {(() => {
+                    const code = barcodeSearch.trim();
+                    if (!code) return null;
+                    const match = products.find(p => p.codigoBarras === code);
+                    if (!match) return null;
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          addToCart(match);
+                          notify(`Se agregó ${match.nombre} al carrito.`, "success");
+                          setBarcodeSearch("");
+                        }}
+                        className="w-full flex items-center gap-3 bg-green-50 border border-green-300 rounded-xl px-4 py-3 text-left hover:bg-green-100 active:bg-green-200 transition cursor-pointer"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <p className="font-bold text-slate-800 text-sm truncate">{match.nombre}</p>
+                          <p className="text-xs text-slate-500 mt-0.5">{match.categoria} · Stock: {match.stock} {match.unidadMedida}</p>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className="font-bold text-slate-800 text-sm">${match.precioVenta.toLocaleString("es-CL")}</p>
+                          <p className="text-xs text-green-600 font-semibold mt-0.5">Agregar →</p>
+                        </div>
+                      </button>
+                    );
+                  })()}
+
                   {/* Horizontal Scroll Categories */}
                   <div className="flex gap-1.5 overflow-x-auto pb-1.5 scrollbar-thin">
                     {allCategories.map((cat) => (
@@ -2287,6 +2315,9 @@ export default function App() {
                                   {isLow ? `⚠ ${product.stock}` : product.stock}{product.unidadMedida === 'kg' ? ' kg' : isLow ? '' : ' un.'}
                                 </span>
                                 <h3 className="font-bold text-slate-800 text-sm leading-tight line-clamp-2 mt-0.5">{product.nombre}</h3>
+                                {product.codigoBarras && (
+                                  <p className="text-[10px] text-slate-400 font-mono truncate">{product.codigoBarras}</p>
+                                )}
                               </div>
                               {/* Price + add button row */}
                               <div className="flex items-center justify-between px-3 pb-3 gap-2">
