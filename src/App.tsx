@@ -139,6 +139,8 @@ export default function App() {
   const [cashAmount, setCashAmount] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [barcodeSearch, setBarcodeSearch] = useState("");
+  const [lastScannedProduct, setLastScannedProduct] = useState<Product | null>(null);
+  const lastScannedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<string>("Todos");
   const [userCategories, setUserCategories] = useState<{ id: string; name: string }[]>([]);
   const [showAddCategoryInput, setShowAddCategoryInput] = useState(false);
@@ -1560,8 +1562,10 @@ export default function App() {
     const matched = productsRef.current.find(p => p.codigoBarras === code);
     if (matched) {
       addToCart(matched);
-      notify(`Se agregó ${matched.nombre} al carrito.`, "success");
       setBarcodeSearch("");
+      if (lastScannedTimeoutRef.current) clearTimeout(lastScannedTimeoutRef.current);
+      setLastScannedProduct(matched);
+      lastScannedTimeoutRef.current = setTimeout(() => setLastScannedProduct(null), 2000);
     } else {
       notify(`Código "${code}" no encontrado en el inventario.`, "error");
     }
@@ -2097,8 +2101,10 @@ export default function App() {
                         type="button"
                         onClick={() => {
                           addToCart(match);
-                          notify(`Se agregó ${match.nombre} al carrito.`, "success");
                           setBarcodeSearch("");
+                          if (lastScannedTimeoutRef.current) clearTimeout(lastScannedTimeoutRef.current);
+                          setLastScannedProduct(match);
+                          lastScannedTimeoutRef.current = setTimeout(() => setLastScannedProduct(null), 2000);
                         }}
                         className="w-full flex items-center gap-3 bg-green-50 border border-green-300 rounded-xl px-4 py-3 text-left hover:bg-green-100 active:bg-green-200 transition cursor-pointer"
                       >
@@ -2113,6 +2119,18 @@ export default function App() {
                       </button>
                     );
                   })()}
+
+                  {/* Confirmación visual post-escaneo */}
+                  {!barcodeSearch.trim() && lastScannedProduct && (
+                    <div className="flex items-center gap-3 bg-green-50 border border-green-300 rounded-xl px-4 py-3">
+                      <CheckCircle className="w-4 h-4 text-green-500 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="font-bold text-slate-800 text-sm truncate">{lastScannedProduct.nombre}</p>
+                        <p className="text-xs text-green-600 font-semibold">Agregado al carrito</p>
+                      </div>
+                      <p className="font-bold text-slate-800 text-sm shrink-0">${lastScannedProduct.precioVenta.toLocaleString("es-CL")}</p>
+                    </div>
+                  )}
 
                   {/* Horizontal Scroll Categories */}
                   <div className="flex gap-1.5 overflow-x-auto pb-1.5 scrollbar-thin">
