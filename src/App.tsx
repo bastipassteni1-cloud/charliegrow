@@ -224,6 +224,12 @@ export default function App() {
     if (!trimmed || trimmed === oldName) return;
     if (!user) return;
 
+    const alreadyExists = allCategories.filter(c => c !== oldName).includes(trimmed);
+    if (alreadyExists) {
+      notify(`La categoría "${trimmed}" ya existe.`, "error");
+      return;
+    }
+
     // Actualizar estado local optimistamente
     setUserCategories(prev => prev.map(c => c.name === oldName ? { ...c, name: trimmed } : c));
     if (selectedCategory === oldName) setSelectedCategory(trimmed);
@@ -234,7 +240,10 @@ export default function App() {
       await supabase.from('categories').delete().eq('name', oldName).eq('user_id', user.id);
       const { error: insErr } = await supabase.from('categories').insert({ user_id: user.id, name: trimmed });
       if (insErr) {
+        // Restaurar la categoría vieja en DB para no perderla
+        await supabase.from('categories').insert({ user_id: user.id, name: oldName });
         setUserCategories(prev => prev.map(c => c.name === trimmed ? { ...c, name: oldName } : c));
+        if (selectedCategory === trimmed) setSelectedCategory(oldName);
         notify("Error al renombrar la categoría. Reintenta.", "error");
         return;
       }
@@ -264,10 +273,16 @@ export default function App() {
     setConfirmModal({
       message: `¿Eliminar la categoría "${cat}"? Los productos quedarán como "Otros".`,
       onConfirm: async () => {
+        const removedCat = userCategories.find(c => c.name === cat);
         setUserCategories(prev => prev.filter(c => c.name !== cat));
         if (selectedCategory === cat) setSelectedCategory("Todos");
         if (isOnline) {
-          await supabase.from('categories').delete().eq('name', cat).eq('user_id', user!.id);
+          const { error } = await supabase.from('categories').delete().eq('name', cat).eq('user_id', user!.id);
+          if (error) {
+            if (removedCat) setUserCategories(prev => [...prev, removedCat]);
+            notify("Error al eliminar la categoría. Reintenta.", "error");
+            return;
+          }
         }
 
         const affected = productsRef.current.filter(p => p.categoria === cat);
@@ -612,9 +627,10 @@ export default function App() {
     for (const op of ops) {
       try {
         if (op.type === 'ADD_PRODUCT') {
-          await supabase.from('products').upsert(op.data);
+          const { error } = await supabase.from('products').upsert(op.data);
+          if (error) throw error;
         } else if (op.type === 'UPDATE_PRODUCT') {
-          await supabase.from('products').update({
+          const { error } = await supabase.from('products').update({
             nombre: op.data.nombre,
             codigo_barras: op.data.codigo_barras,
             categoria: op.data.categoria,
@@ -625,19 +641,29 @@ export default function App() {
             unidad_medida: op.data.unidad_medida,
             updated_at: op.data.updated_at,
           }).eq('id', op.data.id);
+          if (error) throw error;
         } else if (op.type === 'DELETE_PRODUCT') {
-          await supabase.from('products').delete().eq('id', op.data.id);
+          const { error } = await supabase.from('products').delete().eq('id', op.data.id);
+          if (error) throw error;
         } else if (op.type === 'UPDATE_STOCK') {
-          await supabase.from('products').update({ stock: op.data.stock, updated_at: op.data.updated_at }).eq('id', op.data.id);
+          const { error } = await supabase.from('products').update({ stock: op.data.stock, updated_at: op.data.updated_at }).eq('id', op.data.id);
+          if (error) throw error;
         } else if (op.type === 'DELETE_SALE') {
-          await supabase.from('sales').delete().eq('id', op.data.id);
+          const { error } = await supabase.from('sales').delete().eq('id', op.data.id);
+          if (error) throw error;
         } else if (op.type === 'CHECKOUT_SALE') {
-          await supabase.from('sales').upsert(op.data.sale);
-          if (op.data.items?.length) await supabase.from('sale_items').upsert(op.data.items);
+          const { error: saleErr } = await supabase.from('sales').upsert(op.data.sale);
+          if (saleErr) throw saleErr;
+          if (op.data.items?.length) {
+            const { error: itemsErr } = await supabase.from('sale_items').upsert(op.data.items);
+            if (itemsErr) throw itemsErr;
+          }
           if (op.data.stockUpdates?.length) {
-            await Promise.all(op.data.stockUpdates.map((u: any) =>
+            const results = await Promise.all(op.data.stockUpdates.map((u: any) =>
               supabase.from('products').update({ stock: u.stock, updated_at: u.updated_at }).eq('id', u.id)
             ));
+            const stockErr = results.find(r => r.error);
+            if (stockErr?.error) throw stockErr.error;
           }
         }
       } catch (e) {
@@ -838,6 +864,7 @@ export default function App() {
       const now = new Date().toISOString();
       const stockUpdates: { id: string; stock: number; updated_at: string }[] = [];
 
+      const previousProducts = productsRef.current;
       const updatedProducts = products.map((prod) => {
         const matchedItem = items.find(item =>
           prod.nombre.toLowerCase().includes(item.nombre.toLowerCase()) ||
@@ -862,7 +889,8 @@ export default function App() {
         );
         const anyError = results.find(r => r.error);
         if (anyError) {
-          notify("Error al guardar algunos cambios de stock. Reintenta.", "error");
+          setProducts(previousProducts);
+          notify("Error al guardar los cambios de stock. Reintenta.", "error");
           return;
         }
       } else {
