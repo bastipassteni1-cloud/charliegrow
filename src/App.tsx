@@ -120,6 +120,7 @@ export default function App() {
   const codeReaderRef = useRef<{ stop: () => void } | null>(null);
   const lastScannedRef = useRef<string | null>(null);
   const productsRef = useRef<Product[]>([]);
+  const pendingInsertIds = useRef<Set<string>>(new Set());
 
   // Escaneo de carrito por foto (no requiere HTTPS)
   const [isScanningCartPhoto, setIsScanningCartPhoto] = useState(false);
@@ -413,7 +414,13 @@ export default function App() {
         .order('updated_at', { ascending: false });
 
       if (prodErr) { setSyncError("Error cargando productos."); setIsSyncing(false); isLoadingRef.current = false; return; }
-      setProducts(prods ? prods.map(toProduct) : []);
+      setProducts(prev => {
+        const dbProds = prods ? prods.map(toProduct) : [];
+        const dbIds = new Set(dbProds.map(p => p.id));
+        // Conservar productos en vuelo que aún no llegaron a la DB
+        const pending = prev.filter(p => pendingInsertIds.current.has(p.id) && !dbIds.has(p.id));
+        return [...pending, ...dbProds];
+      });
 
       const { data: salesData, error: salesErr } = await supabase
         .from('sales')
@@ -568,15 +575,24 @@ export default function App() {
   useEffect(() => {
     const handleGlobalKey = (e: KeyboardEvent) => {
       if (activeTab !== 'caja') return;
+      // No interceptar cuando hay modales abiertos
+      if (confirmModal || showBarcodeModal || showCategoryModal || showAddProductModal ||
+          showAiPhotoModal || showLiveScanner || showUpgradeModal || showAlertModal) return;
       const tag = (e.target as HTMLElement).tagName;
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;
-      if (e.key.length === 1 || e.key === 'Enter') {
+      if (e.key.length === 1) {
+        // Capturar el primer caracter — sin esto la pistola USB siempre pierde la primera letra
+        e.preventDefault();
+        setBarcodeSearch(prev => prev + e.key);
+        barcodeInputRef.current?.focus();
+      } else if (e.key === 'Enter') {
         barcodeInputRef.current?.focus();
       }
     };
     window.addEventListener('keydown', handleGlobalKey);
     return () => window.removeEventListener('keydown', handleGlobalKey);
-  }, [activeTab]);
+  }, [activeTab, confirmModal, showBarcodeModal, showCategoryModal, showAddProductModal,
+      showAiPhotoModal, showLiveScanner, showUpgradeModal, showAlertModal]);
 
   const queueOp = (type: PendingOp['type'], data: any) => {
     const op: PendingOp = { id: `op-${Date.now()}`, timestamp: new Date().toISOString(), type, data };
@@ -888,15 +904,18 @@ export default function App() {
     };
 
     if (!user) { notify("Sesión expirada. Recarga la página.", "error"); return; }
+    pendingInsertIds.current.add(id);
     setProducts(prev => [createdProduct, ...prev]);
     if (isOnline) {
       const { error } = await supabase.from('products').insert(fromProduct(createdProduct, user.id));
+      pendingInsertIds.current.delete(id);
       if (error) {
         setProducts(prev => prev.filter(p => p.id !== createdProduct.id));
         notify(`Error: ${error.message}`, "error");
         return;
       }
     } else {
+      pendingInsertIds.current.delete(id);
       queueOp('ADD_PRODUCT', fromProduct(createdProduct, user.id));
     }
     notify("Producto guardado.", "success");
@@ -1210,15 +1229,18 @@ export default function App() {
     };
 
     if (!user) return;
+    pendingInsertIds.current.add(id);
     setProducts(prev => [createdProduct as Product, ...prev]);
     if (isOnline) {
       const { error } = await supabase.from('products').insert(fromProduct(createdProduct as Product, user.id));
+      pendingInsertIds.current.delete(id);
       if (error) {
         setProducts(prev => prev.filter(p => p.id !== createdProduct.id));
         notify("Error al guardar el producto.", "error");
         return;
       }
     } else {
+      pendingInsertIds.current.delete(id);
       queueOp('ADD_PRODUCT', fromProduct(createdProduct as Product, user.id));
     }
     notify("Producto guardado.", "success");
@@ -1505,6 +1527,7 @@ export default function App() {
     setAnalysisResult(null);
     setCashAmount("");
     setDiscountPct(0);
+    setTimeout(() => barcodeInputRef.current?.focus(), 100);
 
     // Alerta de stock bajo para productos afectados por esta venta
     const lowAfterSale = stockUpdates
@@ -1583,13 +1606,13 @@ export default function App() {
     const code = barcodeSearch.trim();
     if (!code) return;
 
-    const matched = products.find(p => p.codigoBarras === code);
+    const matched = productsRef.current.find(p => p.codigoBarras === code);
     if (matched) {
       addToCart(matched);
       notify(`Se agregó ${matched.nombre} al carrito.`, "success");
       setBarcodeSearch("");
     } else {
-      notify("Producto no encontrado por código de barras.", "error");
+      notify(`Código "${code}" no encontrado en el inventario.`, "error");
     }
   };
 
