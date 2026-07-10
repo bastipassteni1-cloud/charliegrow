@@ -507,6 +507,8 @@ export default function App() {
   // Mantener productsRef siempre actualizado
   useEffect(() => { productsRef.current = products; }, [products]);
 
+  useEffect(() => { setSearchTerm(""); }, [activeTab]);
+
   const openBarcodeModal = (product: Product) => {
     setBarcodeCode(product.codigoBarras || "");
     setBarcodeLabel(product.nombre);
