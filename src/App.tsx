@@ -121,6 +121,7 @@ export default function App() {
   const lastScannedRef = useRef<string | null>(null);
   const productsRef = useRef<Product[]>([]);
   const pendingInsertIds = useRef<Set<string>>(new Set());
+  const isCheckingOutRef = useRef(false);
 
   // Escaneo de carrito por foto (no requiere HTTPS)
   const [isScanningCartPhoto, setIsScanningCartPhoto] = useState(false);
@@ -442,7 +443,11 @@ export default function App() {
         .select('*, sale_items(*)')
         .order('fecha', { ascending: false });
 
-      if (!salesErr && salesData) setSales(salesData.map(toSale));
+      if (salesErr) {
+        notify("No se pudieron cargar las ventas. Intenta recargar.", "error");
+      } else if (salesData) {
+        setSales(salesData.map(toSale));
+      }
       setIsSyncing(false);
       isLoadingRef.current = false;
 
@@ -1556,6 +1561,8 @@ export default function App() {
       notify("El carrito está vacío.", "error");
       return;
     }
+    if (isCheckingOutRef.current) return;
+    isCheckingOutRef.current = true;
 
     const saleId = uuid();
     const now = new Date().toISOString();
@@ -1632,6 +1639,7 @@ export default function App() {
     if (!isOnline) {
       queueOp('CHECKOUT_SALE', { sale: saleRow, items: saleItems, stockUpdates });
       notify("¡Venta guardada! Se sincronizará cuando vuelva la conexión.", "success");
+      isCheckingOutRef.current = false;
       return;
     }
 
@@ -1663,6 +1671,8 @@ export default function App() {
       setCart(completedSale.items);
       setLastSale(null);
       notify("No se pudo procesar la venta. El carrito fue restaurado.", "error");
+    } finally {
+      isCheckingOutRef.current = false;
     }
   };
 
