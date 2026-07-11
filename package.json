@@ -16,6 +16,7 @@
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
     "@zxing/browser": "^0.2.0",
+    "dexie": "^4.4.4",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
     "heic2any": "^0.0.4",

@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { supabase, toProduct, fromProduct, toSale } from "./supabase";
+import { db } from "./db";
 import type { User as SupabaseUser } from "@supabase/supabase-js";
 import { Product, Sale, SaleItem } from "./types";
 import AuthScreen from "./AuthScreen";
@@ -49,7 +50,7 @@ import JsBarcode from "jsbarcode";
 type PendingOp = {
   id: string;
   timestamp: string;
-  type: 'ADD_PRODUCT' | 'UPDATE_PRODUCT' | 'DELETE_PRODUCT' | 'UPDATE_STOCK' | 'CHECKOUT_SALE' | 'DELETE_SALE';
+  type: 'ADD_PRODUCT' | 'UPDATE_PRODUCT' | 'DELETE_PRODUCT' | 'UPDATE_STOCK' | 'CHECKOUT_SALE' | 'DELETE_SALE' | 'ADD_CATEGORY' | 'RENAME_CATEGORY' | 'DELETE_CATEGORY';
   data: any;
 };
 
@@ -121,6 +122,9 @@ export default function App() {
   const [pendingOps, setPendingOps] = useState<PendingOp[]>(() => {
     try { return JSON.parse(localStorage.getItem('almacen_pending') || '[]'); } catch { return []; }
   });
+  const pendingOpsRef = useRef<PendingOp[]>(
+    (() => { try { return JSON.parse(localStorage.getItem('almacen_pending') || '[]'); } catch { return []; } })()
+  );
   const [isSyncingQueue, setIsSyncingQueue] = useState(false);
   const isSyncingRef = useRef(false);
   const isLoadingRef = useRef(false);
@@ -133,7 +137,7 @@ export default function App() {
   const codeReaderRef = useRef<{ stop: () => void } | null>(null);
   const lastScannedRef = useRef<string | null>(null);
   const productsRef = useRef<Product[]>([]);
-  const pendingInsertIds = useRef<Set<string>>(new Set());
+
   const isCheckingOutRef = useRef(false);
   const lastLoadTimeRef = useRef<number>(0);       // Punto 4: throttle focus/visibility
   const reloadDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null); // Punto 3: debounce realtime
@@ -213,68 +217,38 @@ export default function App() {
   const orphanCategories = Array.from(new Set(products.map(p => p.categoria).filter(c => c && !userCategoryNames.includes(c))));
   const allCategories = ["Todos", ...userCategoryNames, ...orphanCategories];
 
-  const addCategory = async (name: string) => {
+  const addCategory = (name: string) => {
     const trimmed = name.trim();
     if (!trimmed || allCategories.includes(trimmed)) return;
     if (!user) return;
-    const tempId = uuid();
-    setUserCategories(prev => [...prev, { id: tempId, name: trimmed }]);
+    const newId = uuid();
+    const newCat = { id: newId, name: trimmed };
+    setUserCategories(prev => [...prev, newCat]);
+    db.categories.put(newCat).catch(() => {});
     setNewCategoryName("");
-    const { data, error } = await supabase.from('categories').insert({ user_id: user.id, name: trimmed }).select().single();
-    if (error) {
-      setUserCategories(prev => prev.filter(c => c.id !== tempId));
-      notify("Error al crear la categoría.", "error");
-      return;
-    }
-    setUserCategories(prev => prev.map(c => c.id === tempId ? { id: data.id, name: trimmed } : c));
+    queueOp('ADD_CATEGORY', { id: newId, user_id: user.id, name: trimmed });
   };
 
-  const renameCategory = async (oldName: string, newName: string) => {
+  const renameCategory = (oldName: string, newName: string) => {
     const trimmed = newName.trim();
     if (!trimmed || trimmed === oldName) return;
     if (!user) return;
-
-    const alreadyExists = allCategories.filter(c => c !== oldName).includes(trimmed);
-    if (alreadyExists) {
+    if (allCategories.filter(c => c !== oldName).includes(trimmed)) {
       notify(`La categoría "${trimmed}" ya existe.`, "error");
       return;
     }
-
-    // Actualizar estado local optimistamente
-    setUserCategories(prev => prev.map(c => c.name === oldName ? { ...c, name: trimmed } : c));
+    const cat = userCategories.find(c => c.name === oldName);
+    if (!cat) return;
+    const renamed = { ...cat, name: trimmed };
+    setUserCategories(prev => prev.map(c => c.name === oldName ? renamed : c));
+    db.categories.put(renamed).catch(() => {});
     if (selectedCategory === oldName) setSelectedCategory(trimmed);
     setEditingCategory(null);
-
-    if (isOnline) {
-      // Renombrar en Supabase: borrar vieja e insertar nueva
-      await supabase.from('categories').delete().eq('name', oldName).eq('user_id', user.id);
-      const { error: insErr } = await supabase.from('categories').insert({ user_id: user.id, name: trimmed });
-      if (insErr) {
-        // Restaurar la categoría vieja en DB para no perderla
-        await supabase.from('categories').insert({ user_id: user.id, name: oldName });
-        setUserCategories(prev => prev.map(c => c.name === trimmed ? { ...c, name: oldName } : c));
-        if (selectedCategory === trimmed) setSelectedCategory(oldName);
-        notify("Error al renombrar la categoría. Reintenta.", "error");
-        return;
-      }
-      // Actualizar productos afectados
-      const affected = productsRef.current.filter(p => p.categoria === oldName);
-      if (affected.length > 0) {
-        setProducts(prev => prev.map(p => p.categoria === oldName ? { ...p, categoria: trimmed } : p));
-        const results = await Promise.all(affected.map(p =>
-          supabase.from('products').update({ categoria: trimmed }).eq('id', p.id)
-        ));
-        if (results.find(r => r.error)) {
-          notify("Error al renombrar en algunos productos. Reintenta.", "error");
-          return;
-        }
-      }
-    } else {
-      const affected = productsRef.current.filter(p => p.categoria === oldName);
-      if (affected.length > 0) {
-        setProducts(prev => prev.map(p => p.categoria === oldName ? { ...p, categoria: trimmed } : p));
-        affected.forEach(p => queueOp('UPDATE_PRODUCT', fromProduct({ ...p, categoria: trimmed }, user.id)));
-      }
+    queueOp('RENAME_CATEGORY', { catId: cat.id, user_id: user.id, oldName, newName: trimmed });
+    const affected = productsRef.current.filter(p => p.categoria === oldName);
+    if (affected.length > 0) {
+      setProducts(prev => prev.map(p => p.categoria === oldName ? { ...p, categoria: trimmed } : p));
+      affected.forEach(p => queueOp('UPDATE_PRODUCT', fromProduct({ ...p, categoria: trimmed }, user.id)));
     }
     notify("Categoría renombrada.", "success");
   };
@@ -282,29 +256,18 @@ export default function App() {
   const deleteCategory = (cat: string) => {
     setConfirmModal({
       message: `¿Eliminar la categoría "${cat}"? Los productos quedarán como "Otros".`,
-      onConfirm: async () => {
+      onConfirm: () => {
         const removedCat = userCategories.find(c => c.name === cat);
         setUserCategories(prev => prev.filter(c => c.name !== cat));
-        if (selectedCategory === cat) setSelectedCategory("Todos");
-        if (isOnline) {
-          const { error } = await supabase.from('categories').delete().eq('name', cat).eq('user_id', user!.id);
-          if (error) {
-            if (removedCat) setUserCategories(prev => [...prev, removedCat]);
-            notify("Error al eliminar la categoría. Reintenta.", "error");
-            return;
-          }
+        if (removedCat) {
+          db.categories.delete(removedCat.id).catch(() => {});
+          queueOp('DELETE_CATEGORY', { catId: removedCat.id, user_id: user!.id });
         }
-
+        if (selectedCategory === cat) setSelectedCategory("Todos");
         const affected = productsRef.current.filter(p => p.categoria === cat);
         if (affected.length > 0) {
           setProducts(prev => prev.map(p => p.categoria === cat ? { ...p, categoria: "Otros" } : p));
-          if (isOnline) {
-            await Promise.all(affected.map(p =>
-              supabase.from('products').update({ categoria: "Otros" }).eq('id', p.id)
-            ));
-          } else {
-            affected.forEach(p => queueOp('UPDATE_PRODUCT', fromProduct({ ...p, categoria: "Otros" }, user!.id)));
-          }
+          affected.forEach(p => queueOp('UPDATE_PRODUCT', fromProduct({ ...p, categoria: "Otros" }, user!.id)));
         }
         notify("Categoría eliminada.", "success");
       }
@@ -367,6 +330,7 @@ export default function App() {
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
+    await Promise.all([db.products.clear(), db.sales.clear(), db.categories.clear()]).catch(() => {});
     setProducts([]);
     setSales([]);
     setCart([]);
@@ -415,42 +379,34 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
 
-    // Punto 1: mostrar datos cacheados de inmediato mientras carga Supabase
-    const ck = (t: string) => `cg_${t}_${user.id}`;
-    try {
-      const cp = localStorage.getItem(ck('products'));
-      if (cp) setProducts(JSON.parse(cp));
-      const cc = localStorage.getItem(ck('cats'));
-      if (cc) setUserCategories(JSON.parse(cc));
-      const cs = localStorage.getItem(ck('sales'));
-      if (cs) setSales(JSON.parse(cs));
-    } catch {}
+    // Punto 1: mostrar datos de Dexie (local) de inmediato mientras carga Supabase
+    db.products.toArray().then(p => { if (p.length > 0) setProducts(p); }).catch(() => {});
+    db.sales.orderBy('fecha').reverse().toArray().then(s => { if (s.length > 0) setSales(s); }).catch(() => {});
+    db.categories.toArray().then(c => { if (c.length > 0) setUserCategories(c); }).catch(() => {});
 
     setIsSyncing(true);
     setSyncError(null);
 
     const loadAll = async (): Promise<boolean> => {
-      // Si no hay internet, usar cache silenciosamente sin mostrar error
-      if (!navigator.onLine) {
-        setIsSyncing(false);
-        return false;
-      }
+      if (!navigator.onLine) { setIsSyncing(false); return false; }
+      // Si hay ops pendientes, esperar a que syncQueue las envíe primero — así Supabase tendrá los datos más frescos
+      if (pendingOpsRef.current.length > 0) { setIsSyncing(false); return false; }
       if (isLoadingRef.current) { pendingReloadRef.current = true; return true; }
       isLoadingRef.current = true;
       pendingReloadRef.current = false;
 
-      // Cargar categorías — sembrar predefinidas si el usuario no tiene ninguna
+      // Categorías — sembrar predefinidas si el usuario no tiene ninguna
       const { data: cats } = await supabase.from('categories').select('*').eq('user_id', user.id).order('created_at', { ascending: true });
       if (!cats || cats.length === 0) {
-        const seed = DEFAULT_CATEGORIES.map(name => ({ user_id: user.id, name }));
-        const { data: seeded } = await supabase.from('categories').insert(seed).select();
-        const mapped = seeded ? seeded.map((c: any) => ({ id: c.id, name: c.name })) : [];
+        const seed = DEFAULT_CATEGORIES.map(name => ({ id: uuid(), user_id: user.id, name }));
+        const { data: seeded } = await supabase.from('categories').upsert(seed).select();
+        const mapped = seeded ? seeded.map((c: any) => ({ id: c.id, name: c.name })) : seed.map(s => ({ id: s.id, name: s.name }));
         setUserCategories(mapped);
-        try { localStorage.setItem(ck('cats'), JSON.stringify(mapped)); } catch {}
+        db.categories.bulkPut(mapped).catch(() => {});
       } else {
         const mapped = cats.map((c: any) => ({ id: c.id, name: c.name }));
         setUserCategories(mapped);
-        try { localStorage.setItem(ck('cats'), JSON.stringify(mapped)); } catch {}
+        db.categories.bulkPut(mapped).catch(() => {});
       }
 
       const { data: prods, error: prodErr } = await supabase
@@ -466,12 +422,9 @@ export default function App() {
       }
 
       const dbProds = prods ? prods.map(toProduct) : [];
-      setProducts(prev => {
-        const dbIds = new Set(dbProds.map(p => p.id));
-        const pending = prev.filter(p => pendingInsertIds.current.has(p.id) && !dbIds.has(p.id));
-        return [...pending, ...dbProds];
-      });
-      try { localStorage.setItem(ck('products'), JSON.stringify(dbProds)); } catch {}
+      setProducts(dbProds);
+      // Solo merge hacia Dexie — nunca borrar datos locales desde aquí
+      db.products.bulkPut(dbProds).catch(() => {});
 
       const { data: salesData, error: salesErr } = await supabase
         .from('sales')
@@ -484,10 +437,10 @@ export default function App() {
       } else if (salesData) {
         const mapped = salesData.map(toSale);
         setSales(mapped);
-        try { localStorage.setItem(ck('sales'), JSON.stringify(mapped)); } catch {}
+        db.sales.bulkPut(mapped).catch(() => {});
       }
 
-      lastLoadTimeRef.current = Date.now(); // Punto 4
+      lastLoadTimeRef.current = Date.now();
       setIsSyncing(false);
       isLoadingRef.current = false;
 
@@ -533,10 +486,27 @@ export default function App() {
     };
   }, [user]);
 
-  // Persistir cola en localStorage cuando cambia
+  // Persistir cola en localStorage y mantener ref actualizada
   useEffect(() => {
+    pendingOpsRef.current = pendingOps;
     localStorage.setItem('almacen_pending', JSON.stringify(pendingOps));
   }, [pendingOps]);
+
+  // Auto-persistir en Dexie ante cualquier cambio — garantiza offline tras reinicio
+  useEffect(() => {
+    if (!user || products.length === 0) return;
+    db.products.bulkPut(products).catch(() => {});
+  }, [products, user]);
+
+  useEffect(() => {
+    if (!user) return;
+    db.sales.bulkPut(sales).catch(() => {});
+  }, [sales, user]);
+
+  useEffect(() => {
+    if (!user || userCategories.length === 0) return;
+    db.categories.bulkPut(userCategories).catch(() => {});
+  }, [userCategories, user]);
 
   // Listeners de conexión
   useEffect(() => {
@@ -733,6 +703,15 @@ export default function App() {
             const stockErr = results.find(r => r.error);
             if (stockErr?.error) throw stockErr.error;
           }
+        } else if (op.type === 'ADD_CATEGORY') {
+          const { error } = await supabase.from('categories').upsert({ id: op.data.id, user_id: op.data.user_id, name: op.data.name });
+          if (error) throw error;
+        } else if (op.type === 'RENAME_CATEGORY') {
+          const { error } = await supabase.from('categories').update({ name: op.data.newName }).eq('id', op.data.catId);
+          if (error) throw error;
+        } else if (op.type === 'DELETE_CATEGORY') {
+          const { error } = await supabase.from('categories').delete().eq('id', op.data.catId).eq('user_id', op.data.user_id);
+          if (error) throw error;
         }
       } catch (e) {
         console.error('Sync failed:', op.type, e);
@@ -740,6 +719,8 @@ export default function App() {
       }
     }
 
+    // Actualizar ref inmediatamente para que loadAll vea la cola vacía
+    pendingOpsRef.current = failed;
     setPendingOps(failed);
     isSyncingRef.current = false;
     setIsSyncingQueue(false);
@@ -896,20 +877,9 @@ export default function App() {
     };
 
     if (!user) { notify("Sesión expirada. Recarga la página.", "error"); return; }
-    pendingInsertIds.current.add(id);
     setProducts(prev => [createdProduct, ...prev]);
-    if (isOnline) {
-      const { error } = await supabase.from('products').insert(fromProduct(createdProduct, user.id));
-      pendingInsertIds.current.delete(id);
-      if (error) {
-        setProducts(prev => prev.filter(p => p.id !== createdProduct.id));
-        notify(`Error: ${error.message}`, "error");
-        return;
-      }
-    } else {
-      pendingInsertIds.current.delete(id);
-      queueOp('ADD_PRODUCT', fromProduct(createdProduct, user.id));
-    }
+    db.products.put(createdProduct).catch(() => {});
+    queueOp('ADD_PRODUCT', fromProduct(createdProduct, user.id));
     notify("Producto guardado.", "success");
 
     // Reset Form
@@ -1230,20 +1200,9 @@ export default function App() {
     };
 
     if (!user) return;
-    pendingInsertIds.current.add(id);
     setProducts(prev => [createdProduct as Product, ...prev]);
-    if (isOnline) {
-      const { error } = await supabase.from('products').insert(fromProduct(createdProduct as Product, user.id));
-      pendingInsertIds.current.delete(id);
-      if (error) {
-        setProducts(prev => prev.filter(p => p.id !== createdProduct.id));
-        notify("Error al guardar el producto.", "error");
-        return;
-      }
-    } else {
-      pendingInsertIds.current.delete(id);
-      queueOp('ADD_PRODUCT', fromProduct(createdProduct as Product, user.id));
-    }
+    db.products.put(createdProduct as Product).catch(() => {});
+    queueOp('ADD_PRODUCT', fromProduct(createdProduct as Product, user.id));
     notify("Producto guardado.", "success");
 
     // Reset fields
@@ -1257,24 +1216,13 @@ export default function App() {
   };
 
   // Update Stock manual action
-  const handleUpdateStock = async (prodId: string, addedStock: number) => {
+  const handleUpdateStock = (prodId: string, addedStock: number) => {
     const prod = products.find(p => p.id === prodId);
     if (!prod) return;
     const nStock = Math.max(0, prod.stock + addedStock);
     const updatedAt = new Date().toISOString();
     setProducts(prev => prev.map(p => p.id === prodId ? { ...p, stock: nStock, updatedAt } : p));
-    if (isOnline) {
-      const { error } = await supabase.from('products')
-        .update({ stock: nStock, updated_at: updatedAt })
-        .eq('id', prodId);
-      if (error) {
-        setProducts(prev => prev.map(p => p.id === prodId ? { ...p, stock: prod.stock } : p));
-        notify("Error al actualizar stock.", "error");
-        return;
-      }
-    } else {
-      queueOp('UPDATE_STOCK', { id: prodId, stock: nStock, updated_at: updatedAt });
-    }
+    queueOp('UPDATE_STOCK', { id: prodId, stock: nStock, updated_at: updatedAt });
     notify("Stock modificado correctamente.", "success");
     setShowEditStockModal(null);
   };
@@ -1311,28 +1259,9 @@ export default function App() {
     };
 
     setProducts(prev => prev.map(p => p.id === updatedProduct.id ? updatedProduct : p));
+    db.products.put(updatedProduct).catch(() => {});
     setShowEditStockModal(null);
-
-    if (isOnline) {
-      const { error } = await supabase.from('products').update({
-        nombre: updatedProduct.nombre,
-        codigo_barras: updatedProduct.codigoBarras || null,
-        categoria: updatedProduct.categoria,
-        precio_compra: updatedProduct.precioCompra,
-        precio_venta: updatedProduct.precioVenta,
-        stock: updatedProduct.stock,
-        stock_minimo: updatedProduct.stockMinimo,
-        unidad_medida: updatedProduct.unidadMedida,
-        updated_at: updatedProduct.updatedAt,
-      }).eq('id', updatedProduct.id);
-      if (error) {
-        setProducts(prev => prev.map(p => p.id === originalProduct.id ? originalProduct : p)); // use captured original
-        notify("Error al guardar los cambios.", "error");
-        return;
-      }
-    } else {
-      queueOp('UPDATE_PRODUCT', fromProduct(updatedProduct, user.id));
-    }
+    queueOp('UPDATE_PRODUCT', fromProduct(updatedProduct, user.id));
     notify("Producto actualizado.", "success");
   };
 
@@ -1354,16 +1283,8 @@ export default function App() {
       }
       const updated = { ...showBarcodeModal, codigoBarras: code };
       setProducts(prev => prev.map(p => p.id === showBarcodeModal.id ? updated : p));
-      if (isOnline) {
-        const { error } = await supabase.from('products').update({ codigo_barras: code }).eq('id', showBarcodeModal.id);
-        if (error) {
-          notify("Error al guardar el código. Reintenta.", "error");
-          setProducts(prev => prev.map(p => p.id === showBarcodeModal.id ? showBarcodeModal : p));
-          return;
-        }
-      } else {
-        queueOp('UPDATE_PRODUCT', fromProduct(updated, user!.id));
-      }
+      db.products.put(updated).catch(() => {});
+      queueOp('UPDATE_PRODUCT', fromProduct(updated, user!.id));
     }
 
     // Generar SVG fresco para impresión con dimensiones optimizadas para 50x30mm
@@ -1418,19 +1339,10 @@ export default function App() {
   const handleDeleteProduct = (prodId: string) => {
     setConfirmModal({
       message: "¿Eliminar este producto del catálogo?",
-      onConfirm: async () => {
-        const removed = products.find(p => p.id === prodId);
+      onConfirm: () => {
         setProducts(prev => prev.filter(p => p.id !== prodId));
-        if (isOnline) {
-          const { error } = await supabase.from('products').delete().eq('id', prodId);
-          if (error) {
-            if (removed) setProducts(prev => [...prev, removed]);
-            notify("Error al eliminar producto.", "error");
-            return;
-          }
-        } else {
-          queueOp('DELETE_PRODUCT', { id: prodId });
-        }
+        db.products.delete(prodId).catch(() => {});
+        queueOp('DELETE_PRODUCT', { id: prodId });
         notify("Producto eliminado.", "info");
       }
     });
@@ -1439,19 +1351,10 @@ export default function App() {
   const handleDeleteSale = (saleId: string) => {
     setConfirmModal({
       message: "¿Eliminar esta venta del historial?",
-      onConfirm: async () => {
-        const removed = sales.find(s => s.id === saleId);
+      onConfirm: () => {
         setSales(prev => prev.filter(s => s.id !== saleId));
-        if (isOnline) {
-          const { error } = await supabase.from('sales').delete().eq('id', saleId);
-          if (error) {
-            if (removed) setSales(prev => [...prev, removed]);
-            notify("Error al eliminar venta.", "error");
-            return;
-          }
-        } else {
-          queueOp('DELETE_SALE', { id: saleId });
-        }
+        db.sales.delete(saleId).catch(() => {});
+        queueOp('DELETE_SALE', { id: saleId });
         notify("Venta eliminada.", "info");
       }
     });
@@ -1582,44 +1485,10 @@ export default function App() {
       unidad_medida: item.unidadMedida,
     }));
 
-    if (!isOnline) {
-      queueOp('CHECKOUT_SALE', { sale: saleRow, items: saleItems, stockUpdates });
-      notify("¡Venta guardada! Se sincronizará cuando vuelva la conexión.", "success");
-      isCheckingOutRef.current = false;
-      return;
-    }
-
-    try {
-      const { error: saleErr } = await supabase.from('sales').insert(saleRow);
-      if (saleErr) throw saleErr;
-
-      const { error: itemsErr } = await supabase.from('sale_items').insert(saleItems);
-      if (itemsErr) throw itemsErr;
-
-      const stockResults = await Promise.all(stockUpdates.map(u =>
-        supabase.from('products').update({ stock: u.stock, updated_at: u.updated_at }).eq('id', u.id)
-      ));
-      const stockErr = stockResults.find(r => r.error);
-      if (stockErr) {
-        console.error("Stock update partial failure:", stockErr.error);
-        notify("Venta registrada, pero hubo un error al actualizar el stock. Revisa el inventario.", "error");
-      } else {
-        notify("¡Venta registrada! Stock actualizado.", "success");
-      }
-    } catch (err) {
-      console.error("Checkout failed:", err);
-      setSales(prev => prev.filter(s => s.id !== saleId));
-      setProducts(prev => prev.map(p => {
-        const upd = stockUpdates.find(u => u.id === p.id);
-        const cartItem = completedSale.items.find(c => c.id === p.id);
-        return upd && cartItem ? { ...p, stock: upd.stock + cartItem.cantidad } : p;
-      }));
-      setCart(completedSale.items);
-      setLastSale(null);
-      notify("No se pudo procesar la venta. El carrito fue restaurado.", "error");
-    } finally {
-      isCheckingOutRef.current = false;
-    }
+    db.sales.put(completedSale).catch(() => {});
+    queueOp('CHECKOUT_SALE', { sale: saleRow, items: saleItems, stockUpdates });
+    notify(isOnline ? "¡Venta registrada!" : "¡Venta guardada! Se sincronizará cuando haya internet.", "success");
+    isCheckingOutRef.current = false;
   };
 
   // Barcode quick search scanner simulator (Very useful for neighbor stores)
