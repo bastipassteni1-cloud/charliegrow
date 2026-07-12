@@ -766,10 +766,7 @@ export default function App() {
     setIsSyncingQueue(false);
 
     if (failed.length === 0) {
-      notify(`¡${ops.length} cambio${ops.length !== 1 ? 's' : ''} sincronizado${ops.length !== 1 ? 's' : ''} con éxito!`, 'success');
       await reloadRef.current();
-    } else {
-      notify(`${failed.length} cambio(s) no se pudieron sincronizar.`, 'error');
     }
   };
 
@@ -1527,7 +1524,7 @@ export default function App() {
 
     db.sales.put(completedSale).catch(() => {});
     queueOp('CHECKOUT_SALE', { sale: saleRow, items: saleItems, stockUpdates });
-    notify(isOnline ? "¡Venta registrada!" : "¡Venta guardada! Se sincronizará cuando haya internet.", "success");
+    notify("¡Venta registrada!", "success");
     isCheckingOutRef.current = false;
   };
 
@@ -1828,36 +1825,6 @@ export default function App() {
               <div className="flex items-center gap-1 text-xs text-slate-400">
                 <RefreshCw className="w-3 h-3 animate-spin" />
               </div>
-            )}
-            {isSyncingQueue && (
-              <div className="flex items-center gap-1 text-xs bg-yellow-400/80 text-yellow-900 px-2 py-0.5 rounded-full font-medium">
-                <RefreshCw className="w-3 h-3 animate-spin" />
-                <span className="hidden sm:inline">Sincronizando...</span>
-              </div>
-            )}
-            {!isSyncingQueue && !isOnline && (
-              <div className="flex items-center gap-1 text-xs bg-orange-500/90 text-white px-2 py-0.5 rounded-full font-semibold">
-                <span>Sin conexión</span>
-                {pendingOps.length > 0 && (
-                  <span className="bg-white/30 rounded-full px-1.5 py-0">{pendingOps.length}</span>
-                )}
-              </div>
-            )}
-            {syncError && (
-              <div className="flex items-center gap-1 text-xs bg-rose-100 text-rose-700 px-2 py-0.5 rounded-full font-semibold" title={syncError}>
-                <AlertCircle className="w-3 h-3" />
-                <span className="hidden sm:inline">Error sync</span>
-              </div>
-            )}
-            {!isSyncingQueue && isOnline && pendingOps.length > 0 && (
-              <button
-                onClick={() => syncQueue(pendingOps)}
-                className="flex items-center gap-1 text-xs bg-amber-500/90 text-white px-2 py-0.5 rounded-full font-semibold hover:bg-amber-500 transition-colors cursor-pointer"
-              >
-                <RefreshCw className="w-3 h-3" />
-                <span className="hidden sm:inline">Sincronizar</span>
-                <span className="bg-white/30 rounded-full px-1.5">{pendingOps.length}</span>
-              </button>
             )}
             <button
               onClick={() => setShowAlertModal(true)}
