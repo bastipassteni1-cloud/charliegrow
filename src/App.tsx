@@ -1952,6 +1952,23 @@ export default function App() {
                 <div className="text-xl font-extrabold text-slate-700 font-mono">${todaySalesSum.toLocaleString("es-CL")}</div>
               </div>
             </div>
+            {topProductsToday.length > 0 && (
+              <div className="flex flex-col gap-2 pt-1 border-t border-slate-100">
+                <p className="text-xs font-bold uppercase tracking-wider text-slate-400">⭐ Más vendido hoy</p>
+                {topProductsToday.map((p, i) => {
+                  const medals = ['🥇', '🥈', '🥉'];
+                  return (
+                    <div key={p.nombre} className="flex items-center gap-2">
+                      <span className="text-base shrink-0">{medals[i]}</span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-semibold text-slate-700 truncate">{p.nombre}</p>
+                        <p className="text-xs text-slate-400">{p.cantidad} uds</p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
         </aside>
