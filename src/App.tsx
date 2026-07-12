@@ -650,7 +650,47 @@ export default function App() {
 
   const queueOp = (type: PendingOp['type'], data: any) => {
     const op: PendingOp = { id: `op-${Date.now()}`, timestamp: new Date().toISOString(), type, data };
-    setPendingOps(prev => [...prev, op]);
+    setPendingOps(prev => {
+      if (type === 'UPDATE_PRODUCT') {
+        // Mantener solo la última edición completa por producto
+        return [...prev.filter(p => !(p.type === 'UPDATE_PRODUCT' && p.data.id === data.id)), op];
+      }
+      if (type === 'UPDATE_STOCK') {
+        // Mantener solo el último cambio de stock por producto
+        return [...prev.filter(p => !(p.type === 'UPDATE_STOCK' && p.data.id === data.id)), op];
+      }
+      if (type === 'DELETE_PRODUCT') {
+        // Limpiar todas las ops de este producto
+        const wasCreatedOffline = prev.some(p => p.type === 'ADD_PRODUCT' && p.data.id === data.id);
+        const cleaned = prev.filter(p => p.data.id !== data.id);
+        // Si fue creado offline, nunca llegó a Supabase — no necesita DELETE
+        return wasCreatedOffline ? cleaned : [...cleaned, op];
+      }
+      if (type === 'DELETE_SALE') {
+        // Si la venta fue creada offline, nunca llegó a Supabase — solo borrar de la cola
+        const wasCreatedOffline = prev.some(p => p.type === 'CHECKOUT_SALE' && p.data.sale?.id === data.id);
+        const cleaned = prev.filter(p => !(p.type === 'CHECKOUT_SALE' && p.data.sale?.id === data.id));
+        return wasCreatedOffline ? cleaned : [...cleaned, op];
+      }
+      if (type === 'ADD_CATEGORY' || type === 'RENAME_CATEGORY') {
+        // Mantener solo la última op de esta categoría
+        const catId = data.id ?? data.catId;
+        return [...prev.filter(p => !(
+          (p.type === 'ADD_CATEGORY' || p.type === 'RENAME_CATEGORY') &&
+          (p.data.id === catId || p.data.catId === catId)
+        )), op];
+      }
+      if (type === 'DELETE_CATEGORY') {
+        // Limpiar ops de esta categoría
+        const wasCreatedOffline = prev.some(p => p.type === 'ADD_CATEGORY' && p.data.id === data.catId);
+        const cleaned = prev.filter(p => !(
+          (p.type === 'ADD_CATEGORY' || p.type === 'RENAME_CATEGORY') &&
+          (p.data.id === data.catId || p.data.catId === data.catId)
+        ));
+        return wasCreatedOffline ? cleaned : [...cleaned, op];
+      }
+      return [...prev, op];
+    });
   };
 
   const syncQueue = async (ops: PendingOp[]) => {
