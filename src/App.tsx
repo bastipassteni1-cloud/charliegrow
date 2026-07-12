@@ -115,7 +115,6 @@ export default function App() {
   const [sales, setSales] = useState<Sale[]>([]);
 
   const [isSyncing, setIsSyncing] = useState(false);
-  const [syncError, setSyncError] = useState<string | null>(null);
 
   // Offline mode
   const [isOnline, setIsOnline] = useState(navigator.onLine);
@@ -385,7 +384,6 @@ export default function App() {
     db.categories.toArray().then(c => { if (c.length > 0) setUserCategories(c); }).catch(() => {});
 
     setIsSyncing(true);
-    setSyncError(null);
 
     const loadAll = async (): Promise<boolean> => {
       if (!navigator.onLine) { setIsSyncing(false); return false; }
@@ -415,7 +413,6 @@ export default function App() {
         .order('updated_at', { ascending: false });
 
       if (prodErr) {
-        setSyncError("Error cargando productos.");
         setIsSyncing(false);
         isLoadingRef.current = false;
         return false;
@@ -1821,11 +1818,6 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            {isSyncing && (
-              <div className="flex items-center gap-1 text-xs text-slate-400">
-                <RefreshCw className="w-3 h-3 animate-spin" />
-              </div>
-            )}
             <button
               onClick={() => setShowAlertModal(true)}
               className={`w-10 h-10 flex items-center justify-center rounded-xl transition cursor-pointer relative ${alertsEnabled ? 'bg-emerald-50 hover:bg-emerald-100' : 'bg-slate-100 hover:bg-slate-200'}`}
