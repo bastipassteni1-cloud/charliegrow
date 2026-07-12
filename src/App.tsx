@@ -1639,7 +1639,7 @@ export default function App() {
       topProductsTodayMap[item.nombre].cantidad += item.cantidad;
     });
   });
-  const topProductsToday = Object.values(topProductsTodayMap).sort((a, b) => b.cantidad - a.cantidad).slice(0, 5);
+  const topProductsToday = Object.values(topProductsTodayMap).sort((a, b) => b.cantidad - a.cantidad).slice(0, 3);
 
   // Productos bajo el stock mínimo
   const lowStockProducts = products.filter(p => p.stock <= p.stockMinimo).sort((a, b) => a.stock - b.stock);
@@ -2852,43 +2852,41 @@ export default function App() {
                 </div>
               </div>
 
-              {/* 2. TOP PRODUCTOS — Hoy y esta semana lado a lado */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-
-                {/* Hoy */}
-                <div className="bg-white rounded-3xl border border-slate-200/80 shadow-sm p-6 flex flex-col gap-5">
+              {/* 2. MÁS VENDIDO HOY — debajo del resumen de hoy */}
+              {topProductsToday.length > 0 && (
+                <div className="bg-white rounded-3xl border border-slate-200/80 shadow-sm p-5 flex flex-col gap-4">
                   <div>
-                    <h3 className="font-extrabold text-xl text-slate-800">⭐ Más vendido hoy</h3>
+                    <h3 className="font-extrabold text-lg text-slate-800">⭐ Más vendido hoy</h3>
                     <p className="text-sm text-slate-400 mt-0.5">Lo que más salió hoy</p>
                   </div>
-                  {topProductsToday.length === 0 ? (
-                    <p className="text-base text-slate-400 py-2">Sin ventas hoy todavía.</p>
-                  ) : (
-                    <div className="flex flex-col gap-5">
-                      {topProductsToday.map((p, i) => {
-                        const maxQ = topProductsToday[0].cantidad;
-                        const medals = ['🥇', '🥈', '🥉'];
-                        return (
-                          <div key={p.nombre} className="flex items-center gap-4">
-                            <span className="text-2xl shrink-0">{medals[i] ?? `${i + 1}`}</span>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex justify-between items-baseline gap-2 mb-2">
-                                <span className="font-bold text-slate-800 text-base leading-tight truncate">{p.nombre}</span>
-                                <span className="text-base font-black text-yellow-700 font-mono shrink-0">{p.cantidad} uds</span>
-                              </div>
-                              <div className="w-full bg-slate-100 h-3 rounded-full">
-                                <div
-                                  className="bg-yellow-400 h-full rounded-full transition-all duration-500"
-                                  style={{ width: `${Math.round((p.cantidad / maxQ) * 100)}%` }}
-                                />
-                              </div>
+                  <div className="flex flex-col gap-4">
+                    {topProductsToday.map((p, i) => {
+                      const maxQ = topProductsToday[0].cantidad;
+                      const medals = ['🥇', '🥈', '🥉'];
+                      return (
+                        <div key={p.nombre} className="flex items-center gap-4">
+                          <span className="text-2xl shrink-0">{medals[i]}</span>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex justify-between items-baseline gap-2 mb-1.5">
+                              <span className="font-bold text-slate-800 text-sm leading-tight truncate">{p.nombre}</span>
+                              <span className="text-sm font-black text-yellow-700 font-mono shrink-0">{p.cantidad} uds</span>
+                            </div>
+                            <div className="w-full bg-slate-100 h-2.5 rounded-full">
+                              <div
+                                className="bg-yellow-400 h-full rounded-full transition-all duration-500"
+                                style={{ width: `${Math.round((p.cantidad / maxQ) * 100)}%` }}
+                              />
                             </div>
                           </div>
-                        );
-                      })}
-                    </div>
-                  )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
+              )}
+
+              {/* 3. TOP PRODUCTOS esta semana */}
+              <div className="grid grid-cols-1 gap-4">
 
                 {/* Esta semana */}
                 <div className="bg-white rounded-3xl border border-slate-200/80 shadow-sm p-6 flex flex-col gap-5">
@@ -2925,9 +2923,9 @@ export default function App() {
                   )}
                 </div>
 
-              </div>
+              </div>{/* fin grid esta semana */}
 
-              {/* 3. REPOSICIÓN — Productos bajo el mínimo */}
+              {/* 4. REPOSICIÓN — Productos bajo el mínimo */}
               {lowStockProducts.length > 0 && (
                 <div className="bg-amber-50 border-2 border-amber-200 rounded-3xl p-6 flex flex-col gap-4">
                   <div className="flex items-center gap-3">
