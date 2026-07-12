@@ -30,8 +30,6 @@ import {
   Mail,
   Eye,
   EyeOff,
-  Bell,
-  BellOff,
   Printer
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
@@ -278,33 +276,6 @@ export default function App() {
   const [tourStep, setTourStep] = useState(0);
 
   // Alertas (notificación navegador + email via Supabase)
-  const [showAlertModal, setShowAlertModal] = useState(false);
-  const [alertsEnabled, setAlertsEnabled] = useState(() => localStorage.getItem('alerts_enabled') === 'true');
-  const [alertTestLoading, setAlertTestLoading] = useState(false);
-
-
-  const requestNotificationPermission = async () => {
-    if (!('Notification' in window)) return false;
-    if (Notification.permission === 'granted') return true;
-    const perm = await Notification.requestPermission();
-    return perm === 'granted';
-  };
-
-  const sendAlerts = async (lowProducts: { nombre: string; stock: number; stockMinimo: number; unidadMedida: string }[], toEmail: string) => {
-    if (!alertsEnabled || lowProducts.length === 0) return;
-    const date = new Date().toLocaleDateString('es-CL', { day: '2-digit', month: 'long', year: 'numeric' });
-
-    // 1. Notificación del navegador (inmediata)
-    if (Notification.permission === 'granted') {
-      const body = lowProducts.map(p => `${p.nombre}: ${p.stock} ${p.unidadMedida} (mín. ${p.stockMinimo})`).join('\n');
-      new Notification('⚠️ Stock bajo en tu negocio', { body, icon: '/favicon.ico' });
-    }
-
-    // 2. Email via Supabase Edge Function
-    supabase.functions.invoke('send-stock-alert', {
-      body: { email: toEmail, products: lowProducts, date },
-    }).catch(console.error);
-  };
 
   const [newProduct, setNewProduct] = useState({
     nombre: "",
@@ -628,7 +599,7 @@ export default function App() {
       if (activeTab !== 'caja') return;
       // No interceptar cuando hay modales abiertos
       if (confirmModal || showBarcodeModal || showCategoryModal || showAddProductModal ||
-          showAiPhotoModal || showLiveScanner || showUpgradeModal || showAlertModal) return;
+          showAiPhotoModal || showLiveScanner || showUpgradeModal) return;
       const tag = (e.target as HTMLElement).tagName;
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;
       if (e.key.length === 1) {
@@ -643,7 +614,7 @@ export default function App() {
     window.addEventListener('keydown', handleGlobalKey);
     return () => window.removeEventListener('keydown', handleGlobalKey);
   }, [activeTab, confirmModal, showBarcodeModal, showCategoryModal, showAddProductModal,
-      showAiPhotoModal, showLiveScanner, showUpgradeModal, showAlertModal]);
+      showAiPhotoModal, showLiveScanner, showUpgradeModal]);
 
   const queueOp = (type: PendingOp['type'], data: any) => {
     const op: PendingOp = { id: `op-${Date.now()}`, timestamp: new Date().toISOString(), type, data };
@@ -1500,8 +1471,6 @@ export default function App() {
         return null;
       })
       .filter(Boolean) as { nombre: string; stock: number; stockMinimo: number; unidadMedida: string }[];
-    if (user?.email) sendAlerts(crossedMinimum, user.email);
-
     const saleRow = {
       id: saleId,
       user_id: user.id,
@@ -1818,14 +1787,6 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={() => setShowAlertModal(true)}
-              className={`w-10 h-10 flex items-center justify-center rounded-xl transition cursor-pointer relative ${alertsEnabled ? 'bg-emerald-50 hover:bg-emerald-100' : 'bg-slate-100 hover:bg-slate-200'}`}
-              title="Alertas de stock"
-            >
-              {alertsEnabled ? <Bell className="w-5 h-5 text-emerald-600" /> : <BellOff className="w-5 h-5 text-slate-400" />}
-              {alertsEnabled && <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-emerald-400 rounded-full" />}
-            </button>
             <button
               onClick={() => setIsDark(d => !d)}
               className="w-10 h-10 flex items-center justify-center rounded-xl bg-slate-100 hover:bg-slate-200 transition cursor-pointer text-xl"
@@ -3862,96 +3823,6 @@ export default function App() {
                 {upgradeLoading ? 'Guardando...' : 'Crear cuenta y conservar datos'}
               </button>
             </form>
-          </div>
-        </div>
-      )}
-
-      {/* Modal: Alertas de stock */}
-      {showAlertModal && (
-        <div className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-800 rounded-3xl shadow-2xl w-full max-w-sm p-6 flex flex-col gap-5 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Bell className="w-5 h-5 text-yellow-500" />
-                <h2 className="font-bold text-slate-800 dark:text-slate-100 text-lg">Alertas de stock</h2>
-              </div>
-              <button onClick={() => setShowAlertModal(false)} className="text-slate-400 hover:text-slate-600 cursor-pointer">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Cómo funciona */}
-            <div className="flex flex-col gap-2">
-              <div className="flex items-start gap-3 bg-slate-50 dark:bg-slate-700/50 rounded-2xl px-4 py-3">
-                <span className="text-xl mt-0.5">🔔</span>
-                <div>
-                  <p className="text-sm font-bold text-slate-700 dark:text-slate-200">Notificación del navegador</p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">Aparece al instante en tu pantalla cuando se registra una venta que baja un producto al mínimo.</p>
-                </div>
-              </div>
-              <div className="flex items-start gap-3 bg-slate-50 dark:bg-slate-700/50 rounded-2xl px-4 py-3">
-                <span className="text-xl mt-0.5">📧</span>
-                <div>
-                  <p className="text-sm font-bold text-slate-700 dark:text-slate-200">Email a <span className="text-yellow-600">{user?.email}</span></p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">Sale desde tu backend de Supabase. Requiere un paso de configuración abajo.</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Toggle principal */}
-            <button
-              onClick={async () => {
-                const next = !alertsEnabled;
-                if (next) {
-                  const granted = await requestNotificationPermission();
-                  if (!granted) { notify('Activa los permisos de notificación en tu navegador', 'error'); return; }
-                }
-                setAlertsEnabled(next);
-                localStorage.setItem('alerts_enabled', String(next));
-              }}
-              className={`flex items-center gap-3 px-4 py-4 rounded-2xl border-2 transition cursor-pointer ${alertsEnabled ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300' : 'border-slate-200 bg-slate-50 dark:bg-slate-700 text-slate-500'}`}
-            >
-              {alertsEnabled ? <Bell className="w-5 h-5" /> : <BellOff className="w-5 h-5" />}
-              <div className="text-left">
-                <p className="font-bold text-sm">{alertsEnabled ? 'Alertas activadas' : 'Alertas desactivadas'}</p>
-                <p className="text-xs opacity-70">{alertsEnabled ? 'Recibirás notificación + email al bajar el stock' : 'Toca para activar'}</p>
-              </div>
-            </button>
-
-            {/* Instrucciones email */}
-            <div className="border border-slate-200 dark:border-slate-600 rounded-2xl p-4 flex flex-col gap-3">
-              <p className="text-xs font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wide">Configurar email — solo una vez</p>
-              <ol className="text-xs text-slate-500 dark:text-slate-400 flex flex-col gap-2 list-decimal list-inside leading-relaxed">
-                <li>Crea cuenta gratis en <span className="font-bold text-yellow-600">resend.com</span></li>
-                <li>Ve a <span className="font-bold">API Keys</span> → crea una clave</li>
-                <li>En tu proyecto de Supabase → <span className="font-bold">Edge Functions → Secrets</span> → agrega: <span className="font-mono bg-slate-100 dark:bg-slate-600 px-1.5 py-0.5 rounded text-slate-700 dark:text-slate-200">RESEND_API_KEY = tu_clave</span></li>
-                <li>Desde la terminal del proyecto ejecuta: <span className="font-mono bg-slate-100 dark:bg-slate-600 px-1.5 py-0.5 rounded text-slate-700 dark:text-slate-200">npx supabase functions deploy send-stock-alert</span></li>
-              </ol>
-            </div>
-
-            {/* Botón probar */}
-            <button
-              onClick={async () => {
-                if (!alertsEnabled) { notify('Activa las alertas primero', 'error'); return; }
-                setAlertTestLoading(true);
-                const testProducts = [{ nombre: 'Producto de prueba', stock: 2, stockMinimo: 5, unidadMedida: 'unidades' }];
-                // Notificación del navegador
-                if (Notification.permission === 'granted') {
-                  new Notification('⚠️ Stock bajo (prueba)', { body: 'Producto de prueba: 2 unidades (mín. 5)', icon: '/favicon.ico' });
-                }
-                // Email
-                const { error } = await supabase.functions.invoke('send-stock-alert', {
-                  body: { email: user?.email, products: testProducts, date: new Date().toLocaleDateString('es-CL', { day: '2-digit', month: 'long', year: 'numeric' }) },
-                });
-                if (error) notify('Notificación enviada. Email: revisa la configuración de Supabase', 'info');
-                else notify('¡Prueba enviada! Revisa tu email y notificaciones', 'success');
-                setAlertTestLoading(false);
-              }}
-              disabled={alertTestLoading}
-              className="w-full py-3 border-2 border-yellow-400 text-yellow-700 dark:text-yellow-400 font-bold rounded-xl hover:bg-yellow-50 dark:hover:bg-yellow-900/20 transition cursor-pointer disabled:opacity-50 text-sm"
-            >
-              {alertTestLoading ? 'Enviando prueba...' : 'Enviar prueba'}
-            </button>
           </div>
         </div>
       )}
