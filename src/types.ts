@@ -3,6 +3,7 @@ export interface Product {
   nombre: string;
   codigoBarras?: string;
   categoria: string;
+  subcategoria?: string;
   precioCompra: number;
   precioVenta: number;
   stock: number;

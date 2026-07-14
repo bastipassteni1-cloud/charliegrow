@@ -160,7 +160,9 @@ export default function App() {
   const [lastScannedProduct, setLastScannedProduct] = useState<Product | null>(null);
   const lastScannedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<string>("Todos");
-  const [userCategories, setUserCategories] = useState<{ id: string; name: string }[]>([]);
+  const [userCategories, setUserCategories] = useState<{ id: string; name: string; parent_id?: string }[]>([]);
+  const [addingSubcategoryTo, setAddingSubcategoryTo] = useState<string | null>(null);
+  const [newSubcategoryName, setNewSubcategoryName] = useState("");
   const [showAddCategoryInput, setShowAddCategoryInput] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [showCategoryModal, setShowCategoryModal] = useState(false);
@@ -170,6 +172,7 @@ export default function App() {
   const [barcodeCode, setBarcodeCode] = useState("");
   const [barcodeLabel, setBarcodeLabel] = useState("");
   const [barcodePrintQty, setBarcodePrintQty] = useState(1);
+  const [barcodeProductSearch, setBarcodeProductSearch] = useState("");
   const barcodeRef = useRef<SVGSVGElement>(null);
 
   const [lowStockAlert, setLowStockAlert] = useState<{ nombre: string; stock: number; stockMinimo: number; unidadMedida: string }[]>([]);
@@ -178,7 +181,7 @@ export default function App() {
   const [showAddProductModal, setShowAddProductModal] = useState(false);
   const [showEditStockModal, setShowEditStockModal] = useState<Product | null>(null);
   const [editForm, setEditForm] = useState({
-    nombre: "", codigoBarras: "", categoria: "Accesorios",
+    nombre: "", codigoBarras: "", categoria: "Accesorios", subcategoria: "",
     precioCompra: "", precioVenta: "", stock: "", stockMinimo: "", unidadMedida: "unidades"
   });
   const [confirmModal, setConfirmModal] = useState<{ message: string; onConfirm: () => void } | null>(null);
@@ -226,6 +229,20 @@ export default function App() {
     queueOp('ADD_CATEGORY', { id: newId, user_id: user.id, name: trimmed });
   };
 
+  const addSubcategory = (parentId: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed || !user) return;
+    const allNames = userCategories.map(c => c.name);
+    if (allNames.includes(trimmed)) { notify(`"${trimmed}" ya existe.`, "error"); return; }
+    const newId = uuid();
+    const newCat = { id: newId, name: trimmed, parent_id: parentId };
+    setUserCategories(prev => [...prev, newCat]);
+    db.categories.put(newCat).catch(() => {});
+    setAddingSubcategoryTo(null);
+    setNewSubcategoryName("");
+    queueOp('ADD_CATEGORY', { id: newId, user_id: user.id, name: trimmed, parent_id: parentId });
+  };
+
   const renameCategory = (oldName: string, newName: string) => {
     const trimmed = newName.trim();
     if (!trimmed || trimmed === oldName) return;
@@ -251,22 +268,44 @@ export default function App() {
   };
 
   const deleteCategory = (cat: string) => {
+    const removedCat = userCategories.find(c => c.name === cat);
+    const children = removedCat ? userCategories.filter(c => c.parent_id === removedCat.id) : [];
+    const extra = children.length > 0 ? ` También se eliminarán sus ${children.length} subcategoría(s).` : "";
     setConfirmModal({
-      message: `¿Eliminar la categoría "${cat}"? Los productos quedarán como "Otros".`,
+      message: `¿Eliminar la categoría "${cat}"? Los productos quedarán como "Otros".${extra}`,
       onConfirm: () => {
-        const removedCat = userCategories.find(c => c.name === cat);
-        setUserCategories(prev => prev.filter(c => c.name !== cat));
         if (removedCat) {
-          db.categories.delete(removedCat.id).catch(() => {});
-          queueOp('DELETE_CATEGORY', { catId: removedCat.id, user_id: user!.id });
+          const toDelete = [removedCat, ...children];
+          setUserCategories(prev => prev.filter(c => !toDelete.find(d => d.id === c.id)));
+          toDelete.forEach(c => {
+            db.categories.delete(c.id).catch(() => {});
+            queueOp('DELETE_CATEGORY', { catId: c.id, user_id: user!.id });
+          });
         }
         if (selectedCategory === cat) setSelectedCategory("Todos");
         const affected = productsRef.current.filter(p => p.categoria === cat);
         if (affected.length > 0) {
-          setProducts(prev => prev.map(p => p.categoria === cat ? { ...p, categoria: "Otros" } : p));
-          affected.forEach(p => queueOp('UPDATE_PRODUCT', fromProduct({ ...p, categoria: "Otros" }, user!.id)));
+          setProducts(prev => prev.map(p => p.categoria === cat ? { ...p, categoria: "Otros", subcategoria: undefined } : p));
+          affected.forEach(p => queueOp('UPDATE_PRODUCT', fromProduct({ ...p, categoria: "Otros", subcategoria: undefined }, user!.id)));
         }
         notify("Categoría eliminada.", "success");
+      }
+    });
+  };
+
+  const deleteSubcategory = (sub: { id: string; name: string; parent_id?: string }) => {
+    setConfirmModal({
+      message: `¿Eliminar la subcategoría "${sub.name}"? Los productos quedarán sin subcategoría.`,
+      onConfirm: () => {
+        setUserCategories(prev => prev.filter(c => c.id !== sub.id));
+        db.categories.delete(sub.id).catch(() => {});
+        queueOp('DELETE_CATEGORY', { catId: sub.id, user_id: user!.id });
+        const affected = productsRef.current.filter(p => p.subcategoria === sub.name);
+        if (affected.length > 0) {
+          setProducts(prev => prev.map(p => p.subcategoria === sub.name ? { ...p, subcategoria: undefined } : p));
+          affected.forEach(p => queueOp('UPDATE_PRODUCT', fromProduct({ ...p, subcategoria: undefined }, user!.id)));
+        }
+        notify("Subcategoría eliminada.", "success");
       }
     });
   };
@@ -281,6 +320,7 @@ export default function App() {
     nombre: "",
     codigoBarras: "",
     categoria: "Accesorios",
+    subcategoria: "",
     precioCompra: "",
     precioVenta: "",
     stock: "10",
@@ -519,6 +559,7 @@ export default function App() {
     setBarcodeCode(product.codigoBarras || "");
     setBarcodeLabel(product.nombre);
     setBarcodePrintQty(1);
+    setBarcodeProductSearch(product.nombre);
     setShowBarcodeModal(product);
   };
 
@@ -873,6 +914,7 @@ export default function App() {
       nombre: newProduct.nombre,
       codigoBarras: newProduct.codigoBarras,
       categoria: newProduct.categoria,
+      subcategoria: newProduct.subcategoria || undefined,
       precioCompra: pCompra,
       precioVenta: pVenta,
       stock: stockQty,
@@ -892,6 +934,7 @@ export default function App() {
       nombre: "",
       codigoBarras: "",
       categoria: "Accesorios",
+      subcategoria: "",
       precioCompra: "",
       precioVenta: "",
       stock: "10",
@@ -1255,6 +1298,7 @@ export default function App() {
       nombre: editForm.nombre,
       codigoBarras: editForm.codigoBarras,
       categoria: editForm.categoria,
+      subcategoria: editForm.subcategoria || undefined,
       precioCompra: parseInt(editForm.precioCompra) || 0,
       precioVenta: parseInt(editForm.precioVenta) || 0,
       stock: parseFloat(editForm.stock) || 0,
@@ -2473,7 +2517,10 @@ export default function App() {
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="font-bold text-slate-800 text-sm leading-snug truncate">{product.nombre}</div>
-                          <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-semibold">{product.categoria}</span>
+                          <div className="flex flex-wrap gap-1 mt-0.5">
+                            <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-semibold">{product.categoria}</span>
+                            {product.subcategoria && <span className="text-[10px] bg-emerald-50 text-emerald-600 px-2 py-0.5 rounded-full font-semibold">{product.subcategoria}</span>}
+                          </div>
                         </div>
                         <div className="shrink-0 text-right">
                           <div className="font-mono font-extrabold text-slate-800 text-sm">${product.precioVenta.toLocaleString("es-CL")}</div>
@@ -2492,7 +2539,8 @@ export default function App() {
                               setShowEditStockModal(product);
                               setEditForm({
                                 nombre: product.nombre, codigoBarras: product.codigoBarras || "",
-                                categoria: product.categoria, precioCompra: String(product.precioCompra),
+                                categoria: product.categoria, subcategoria: product.subcategoria || "",
+                                precioCompra: String(product.precioCompra),
                                 precioVenta: String(product.precioVenta), stock: String(product.stock),
                                 stockMinimo: String(product.stockMinimo), unidadMedida: product.unidadMedida,
                               });
@@ -2546,6 +2594,7 @@ export default function App() {
                               <div className="font-bold text-base text-slate-800 leading-tight">{product.nombre}</div>
                               <div className="flex items-center gap-2 text-xs text-slate-400 mt-1">
                                 <span className="bg-slate-100 px-2 py-0.5 rounded-full font-semibold">{product.categoria}</span>
+                                {product.subcategoria && <span className="bg-emerald-50 text-emerald-600 px-2 py-0.5 rounded-full font-semibold">{product.subcategoria}</span>}
                                 {product.codigoBarras && (
                                   <span className="flex items-center gap-0.5 font-mono">
                                     <Barcode className="w-3 h-3 text-slate-300" /> {product.codigoBarras}
@@ -2583,7 +2632,8 @@ export default function App() {
                                     setShowEditStockModal(product);
                                     setEditForm({
                                       nombre: product.nombre, codigoBarras: product.codigoBarras || "",
-                                      categoria: product.categoria, precioCompra: String(product.precioCompra),
+                                      categoria: product.categoria, subcategoria: product.subcategoria || "",
+                                      precioCompra: String(product.precioCompra),
                                       precioVenta: String(product.precioVenta), stock: String(product.stock),
                                       stockMinimo: String(product.stockMinimo), unidadMedida: product.unidadMedida,
                                     });
@@ -3153,14 +3203,33 @@ export default function App() {
                 <label className="block text-slate-500 font-bold mb-1 font-sans">Categoría</label>
                 <select
                   value={newProduct.categoria}
-                  onChange={(e) => setNewProduct({ ...newProduct, categoria: e.target.value })}
+                  onChange={(e) => setNewProduct({ ...newProduct, categoria: e.target.value, subcategoria: "" })}
                   className="w-full bg-slate-50 p-2.5 rounded-lg border border-slate-200"
                 >
-                  {allCategories.filter(c => c !== "Todos").map(cat => (
-                    <option key={cat} value={cat}>{cat}</option>
+                  {userCategories.filter(c => !c.parent_id).map(cat => (
+                    <option key={cat.id} value={cat.name}>{cat.name}</option>
                   ))}
                 </select>
               </div>
+
+              {(() => {
+                const parentCat = userCategories.find(c => c.name === newProduct.categoria && !c.parent_id);
+                const subs = parentCat ? userCategories.filter(c => c.parent_id === parentCat.id) : [];
+                if (subs.length === 0) return null;
+                return (
+                  <div>
+                    <label className="block text-slate-500 font-bold mb-1 font-sans">Subcategoría</label>
+                    <select
+                      value={newProduct.subcategoria}
+                      onChange={(e) => setNewProduct({ ...newProduct, subcategoria: e.target.value })}
+                      className="w-full bg-slate-50 p-2.5 rounded-lg border border-slate-200"
+                    >
+                      <option value="">Sin subcategoría</option>
+                      {subs.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
+                    </select>
+                  </div>
+                );
+              })()}
 
               <div>
                 <label className="block text-slate-500 font-bold mb-1 font-sans">Código de Barras</label>
@@ -3604,11 +3673,11 @@ export default function App() {
                   <label className="block text-slate-500 font-bold mb-1 font-sans">Categoría</label>
                   <select
                     value={editForm.categoria}
-                    onChange={e => setEditForm({ ...editForm, categoria: e.target.value })}
+                    onChange={e => setEditForm({ ...editForm, categoria: e.target.value, subcategoria: "" })}
                     className="w-full bg-slate-50 p-2.5 rounded-lg border border-slate-200 focus:outline-none"
                   >
-                    {allCategories.filter(c => c !== "Todos").map(cat => (
-                      <option key={cat} value={cat}>{cat}</option>
+                    {userCategories.filter(c => !c.parent_id).map(cat => (
+                      <option key={cat.id} value={cat.name}>{cat.name}</option>
                     ))}
                   </select>
                 </div>
@@ -3623,6 +3692,25 @@ export default function App() {
                   />
                 </div>
               </div>
+
+              {(() => {
+                const parentCat = userCategories.find(c => c.name === editForm.categoria && !c.parent_id);
+                const subs = parentCat ? userCategories.filter(c => c.parent_id === parentCat.id) : [];
+                if (subs.length === 0) return null;
+                return (
+                  <div>
+                    <label className="block text-slate-500 font-bold mb-1 font-sans">Subcategoría</label>
+                    <select
+                      value={editForm.subcategoria}
+                      onChange={e => setEditForm({ ...editForm, subcategoria: e.target.value })}
+                      className="w-full bg-slate-50 p-2.5 rounded-lg border border-slate-200 focus:outline-none"
+                    >
+                      <option value="">Sin subcategoría</option>
+                      {subs.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
+                    </select>
+                  </div>
+                );
+              })()}
 
               <div className="grid grid-cols-2 gap-2">
                 <div>
@@ -3889,42 +3977,108 @@ export default function App() {
               </button>
             </div>
 
-            {/* Lista de categorías */}
+            {/* Lista de categorías con subcategorías */}
             <div className="flex flex-col gap-1 overflow-y-auto">
-              {allCategories.filter(c => c !== "Todos").map(cat => {
-                const isEditing = editingCategory?.original === cat;
+              {userCategories.filter(c => !c.parent_id).map(cat => {
+                const isEditing = editingCategory?.original === cat.name;
+                const subs = userCategories.filter(c => c.parent_id === cat.id);
                 return (
-                  <div key={cat} className="flex items-center gap-2 py-2 px-3 rounded-xl hover:bg-slate-50 group">
-                    {isEditing ? (
-                      <form onSubmit={e => { e.preventDefault(); renameCategory(cat, editingCategory.value); }} className="flex flex-1 gap-2">
+                  <div key={cat.id}>
+                    {/* Categoría padre */}
+                    <div className="flex items-center gap-2 py-2 px-3 rounded-xl hover:bg-slate-50 group">
+                      {isEditing ? (
+                        <form onSubmit={e => { e.preventDefault(); renameCategory(cat.name, editingCategory.value); }} className="flex flex-1 gap-2">
+                          <input
+                            autoFocus
+                            value={editingCategory.value}
+                            onChange={e => setEditingCategory({ ...editingCategory, value: e.target.value })}
+                            className="flex-1 bg-slate-50 border border-yellow-400 rounded-lg px-3 py-1.5 text-sm focus:outline-none"
+                          />
+                          <button type="submit" className="bg-slate-800 text-white px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer">Guardar</button>
+                          <button type="button" onClick={() => setEditingCategory(null)} className="text-slate-400 px-2 cursor-pointer text-xs">✕</button>
+                        </form>
+                      ) : (
+                        <>
+                          <span className="flex-1 text-sm font-semibold text-slate-700">{cat.name}</span>
+                          <div className="flex gap-1">
+                            <button
+                              onClick={() => { setAddingSubcategoryTo(cat.id); setNewSubcategoryName(""); }}
+                              className="p-1.5 hover:bg-emerald-50 rounded-lg text-slate-400 hover:text-emerald-600 cursor-pointer transition"
+                              title="Agregar subcategoría"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => setEditingCategory({ original: cat.name, value: cat.name })}
+                              className="p-1.5 hover:bg-yellow-50 rounded-lg text-slate-400 hover:text-yellow-600 cursor-pointer transition"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => { setShowCategoryModal(false); deleteCategory(cat.name); }}
+                              className="p-1.5 hover:bg-rose-50 rounded-lg text-slate-400 hover:text-rose-500 cursor-pointer transition"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Input para nueva subcategoría */}
+                    {addingSubcategoryTo === cat.id && (
+                      <form onSubmit={e => { e.preventDefault(); addSubcategory(cat.id, newSubcategoryName); }} className="flex gap-2 ml-6 mb-1">
                         <input
                           autoFocus
-                          value={editingCategory.value}
-                          onChange={e => setEditingCategory({ ...editingCategory, value: e.target.value })}
-                          className="flex-1 bg-slate-50 border border-yellow-400 rounded-lg px-3 py-1.5 text-sm focus:outline-none"
+                          value={newSubcategoryName}
+                          onChange={e => setNewSubcategoryName(e.target.value)}
+                          placeholder="Nombre subcategoría..."
+                          className="flex-1 bg-slate-50 border border-emerald-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"
                         />
-                        <button type="submit" className="bg-slate-800 text-white px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer">Guardar</button>
-                        <button type="button" onClick={() => setEditingCategory(null)} className="text-slate-400 px-2 cursor-pointer text-xs">✕</button>
+                        <button type="submit" disabled={!newSubcategoryName.trim()} className="bg-emerald-500 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer">OK</button>
+                        <button type="button" onClick={() => setAddingSubcategoryTo(null)} className="text-slate-400 px-2 cursor-pointer text-xs">✕</button>
                       </form>
-                    ) : (
-                      <>
-                        <span className="flex-1 text-sm font-semibold text-slate-700">{cat}</span>
-                        <div className="flex gap-1">
-                          <button
-                            onClick={() => setEditingCategory({ original: cat, value: cat })}
-                            className="p-1.5 hover:bg-yellow-50 rounded-lg text-slate-400 hover:text-yellow-600 cursor-pointer transition"
-                          >
-                            <Edit3 className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            onClick={() => { setShowCategoryModal(false); deleteCategory(cat); }}
-                            className="p-1.5 hover:bg-rose-50 rounded-lg text-slate-400 hover:text-rose-500 cursor-pointer transition"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </>
                     )}
+
+                    {/* Subcategorías */}
+                    {subs.map(sub => {
+                      const isEditingSub = editingCategory?.original === sub.name;
+                      return (
+                        <div key={sub.id} className="flex items-center gap-2 py-1.5 px-3 ml-5 rounded-xl hover:bg-slate-50 group border-l-2 border-slate-100 ml-6">
+                          {isEditingSub ? (
+                            <form onSubmit={e => { e.preventDefault(); renameCategory(sub.name, editingCategory.value); }} className="flex flex-1 gap-2">
+                              <input
+                                autoFocus
+                                value={editingCategory.value}
+                                onChange={e => setEditingCategory({ ...editingCategory, value: e.target.value })}
+                                className="flex-1 bg-slate-50 border border-yellow-400 rounded-lg px-3 py-1.5 text-sm focus:outline-none"
+                              />
+                              <button type="submit" className="bg-slate-800 text-white px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer">Guardar</button>
+                              <button type="button" onClick={() => setEditingCategory(null)} className="text-slate-400 px-2 cursor-pointer text-xs">✕</button>
+                            </form>
+                          ) : (
+                            <>
+                              <span className="w-2 h-2 rounded-full bg-slate-300 shrink-0" />
+                              <span className="flex-1 text-xs font-medium text-slate-500">{sub.name}</span>
+                              <div className="flex gap-1">
+                                <button
+                                  onClick={() => setEditingCategory({ original: sub.name, value: sub.name })}
+                                  className="p-1.5 hover:bg-yellow-50 rounded-lg text-slate-400 hover:text-yellow-600 cursor-pointer transition"
+                                >
+                                  <Edit3 className="w-3 h-3" />
+                                </button>
+                                <button
+                                  onClick={() => { setShowCategoryModal(false); deleteSubcategory(sub); }}
+                                  className="p-1.5 hover:bg-rose-50 rounded-lg text-slate-400 hover:text-rose-500 cursor-pointer transition"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 );
               })}
@@ -3965,19 +4119,36 @@ export default function App() {
               </button>
             </div>
 
-            {/* Selector de producto — solo los que tienen código */}
-            <select
-              value={showBarcodeModal.id}
-              onChange={e => {
-                const p = products.find(p => p.id === e.target.value);
-                if (p) openBarcodeModal(p);
-              }}
-              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-yellow-400"
-            >
-              {products.filter(p => p.codigoBarras).map(p => (
-                <option key={p.id} value={p.id}>{p.nombre}</option>
-              ))}
-            </select>
+            {/* Buscador de producto */}
+            <div className="relative">
+              <input
+                type="text"
+                value={barcodeProductSearch}
+                onChange={e => setBarcodeProductSearch(e.target.value)}
+                placeholder="Buscar producto por nombre..."
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-yellow-400"
+              />
+              {barcodeProductSearch.trim() && products.filter(p =>
+                p.codigoBarras && p.nombre.toLowerCase().includes(barcodeProductSearch.toLowerCase())
+              ).filter(p => p.id !== showBarcodeModal.id).length > 0 && (
+                <div className="absolute z-10 left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
+                  {products
+                    .filter(p => p.codigoBarras && p.nombre.toLowerCase().includes(barcodeProductSearch.toLowerCase()))
+                    .filter(p => p.id !== showBarcodeModal.id)
+                    .map(p => (
+                      <button
+                        key={p.id}
+                        onClick={() => openBarcodeModal(p)}
+                        className="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-yellow-50 hover:text-yellow-800 transition first:rounded-t-xl last:rounded-b-xl cursor-pointer"
+                      >
+                        <span className="font-semibold">{p.nombre}</span>
+                        {p.codigoBarras && <span className="text-slate-400 text-xs ml-2">{p.codigoBarras}</span>}
+                      </button>
+                    ))
+                  }
+                </div>
+              )}
+            </div>
 
             {/* Input de código */}
             <div>

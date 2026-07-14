@@ -1,9 +1,10 @@
 import Dexie, { type Table } from 'dexie';
 import type { Product, Sale } from './types';
 
-interface CategoryRow {
+export interface CategoryRow {
   id: string;
   name: string;
+  parent_id?: string;
 }
 
 class AppDB extends Dexie {
@@ -17,6 +18,11 @@ class AppDB extends Dexie {
       products: 'id, codigoBarras, categoria',
       sales: 'id, fecha',
       categories: 'id, name',
+    });
+    this.version(2).stores({
+      products: 'id, codigoBarras, categoria',
+      sales: 'id, fecha',
+      categories: 'id, name, parent_id',
     });
   }
 }
