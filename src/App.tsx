@@ -48,7 +48,7 @@ import JsBarcode from "jsbarcode";
 type PendingOp = {
   id: string;
   timestamp: string;
-  type: 'ADD_PRODUCT' | 'UPDATE_PRODUCT' | 'DELETE_PRODUCT' | 'UPDATE_STOCK' | 'CHECKOUT_SALE' | 'DELETE_SALE' | 'ADD_CATEGORY' | 'RENAME_CATEGORY' | 'DELETE_CATEGORY';
+  type: 'ADD_PRODUCT' | 'UPDATE_PRODUCT' | 'DELETE_PRODUCT' | 'UPDATE_STOCK' | 'CHECKOUT_SALE' | 'DELETE_SALE' | 'ADD_CATEGORY' | 'RENAME_CATEGORY' | 'DELETE_CATEGORY' | 'ADD_SUBCATEGORY' | 'RENAME_SUBCATEGORY' | 'DELETE_SUBCATEGORY';
   data: any;
 };
 
@@ -161,9 +161,11 @@ export default function App() {
   const lastScannedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<string>("Todos");
   const [selectedSubcategory, setSelectedSubcategory] = useState<string>("Todos");
-  const [userCategories, setUserCategories] = useState<{ id: string; name: string; parent_id?: string }[]>([]);
+  const [userCategories, setUserCategories] = useState<{ id: string; name: string }[]>([]);
+  const [userSubcategories, setUserSubcategories] = useState<{ id: string; category_id: string; name: string }[]>([]);
   const [addingSubcategoryTo, setAddingSubcategoryTo] = useState<string | null>(null);
   const [newSubcategoryName, setNewSubcategoryName] = useState("");
+  const [editingSubcategory, setEditingSubcategory] = useState<{ id: string; category_id: string; original: string; value: string } | null>(null);
   const [showAddCategoryInput, setShowAddCategoryInput] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [showCategoryModal, setShowCategoryModal] = useState(false);
@@ -214,10 +216,9 @@ export default function App() {
   const [upgradeLoading, setUpgradeLoading] = useState(false);
 
   const userCategoryNames = userCategories.map(c => c.name);
-  const parentCategoryNames = userCategories.filter(c => !c.parent_id).map(c => c.name);
   // Categorías en productos que aún no están en userCategories (compatibilidad con datos viejos)
   const orphanCategories = Array.from(new Set(products.map(p => p.categoria).filter(c => c && !userCategoryNames.includes(c))));
-  const allCategories = ["Todos", ...parentCategoryNames, ...orphanCategories];
+  const allCategories = ["Todos", ...userCategoryNames, ...orphanCategories];
 
   const addCategory = (name: string) => {
     const trimmed = name.trim();
@@ -231,18 +232,34 @@ export default function App() {
     queueOp('ADD_CATEGORY', { id: newId, user_id: user.id, name: trimmed });
   };
 
-  const addSubcategory = (parentId: string, name: string) => {
+  const addSubcategory = (categoryId: string, name: string) => {
     const trimmed = name.trim();
     if (!trimmed || !user) return;
-    const allNames = userCategories.map(c => c.name);
-    if (allNames.includes(trimmed)) { notify(`"${trimmed}" ya existe.`, "error"); return; }
+    const exists = userSubcategories.some(s => s.category_id === categoryId && s.name === trimmed);
+    if (exists) { notify(`"${trimmed}" ya existe en esta categoría.`, "error"); return; }
     const newId = uuid();
-    const newCat = { id: newId, name: trimmed, parent_id: parentId };
-    setUserCategories(prev => [...prev, newCat]);
-    db.categories.put(newCat).catch(() => {});
+    const newSub = { id: newId, category_id: categoryId, name: trimmed };
+    setUserSubcategories(prev => [...prev, newSub]);
+    db.subcategories.put(newSub).catch(() => {});
     setAddingSubcategoryTo(null);
     setNewSubcategoryName("");
-    queueOp('ADD_CATEGORY', { id: newId, user_id: user.id, name: trimmed, parent_id: parentId });
+    queueOp('ADD_SUBCATEGORY', { id: newId, user_id: user.id, category_id: categoryId, name: trimmed });
+  };
+
+  const renameSubcategory = (sub: { id: string; category_id: string; name: string }, newName: string) => {
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed === sub.name || !user) return;
+    const updated = { ...sub, name: trimmed };
+    setUserSubcategories(prev => prev.map(s => s.id === sub.id ? updated : s));
+    db.subcategories.put(updated).catch(() => {});
+    const catName = userCategories.find(c => c.id === sub.category_id)?.name;
+    const affected = productsRef.current.filter(p => p.subcategoria === sub.name && p.categoria === catName);
+    if (affected.length > 0) {
+      setProducts(prev => prev.map(p => affected.find(a => a.id === p.id) ? { ...p, subcategoria: trimmed } : p));
+      affected.forEach(p => queueOp('UPDATE_PRODUCT', fromProduct({ ...p, subcategoria: trimmed }, user.id)));
+    }
+    setEditingSubcategory(null);
+    queueOp('RENAME_SUBCATEGORY', { subcatId: sub.id, user_id: user.id, newName: trimmed });
   };
 
   const renameCategory = (oldName: string, newName: string) => {
@@ -271,18 +288,22 @@ export default function App() {
 
   const deleteCategory = (cat: string) => {
     const removedCat = userCategories.find(c => c.name === cat);
-    const children = removedCat ? userCategories.filter(c => c.parent_id === removedCat.id) : [];
-    const extra = children.length > 0 ? ` También se eliminarán sus ${children.length} subcategoría(s).` : "";
+    const catSubs = removedCat ? userSubcategories.filter(s => s.category_id === removedCat.id) : [];
+    const extra = catSubs.length > 0 ? ` También se eliminarán sus ${catSubs.length} subcategoría(s).` : "";
     setConfirmModal({
       message: `¿Eliminar la categoría "${cat}"? Los productos quedarán como "Otros".${extra}`,
       onConfirm: () => {
         if (removedCat) {
-          const toDelete = [removedCat, ...children];
-          setUserCategories(prev => prev.filter(c => !toDelete.find(d => d.id === c.id)));
-          toDelete.forEach(c => {
-            db.categories.delete(c.id).catch(() => {});
-            queueOp('DELETE_CATEGORY', { catId: c.id, user_id: user!.id });
-          });
+          setUserCategories(prev => prev.filter(c => c.id !== removedCat.id));
+          db.categories.delete(removedCat.id).catch(() => {});
+          queueOp('DELETE_CATEGORY', { catId: removedCat.id, user_id: user!.id });
+          if (catSubs.length > 0) {
+            setUserSubcategories(prev => prev.filter(s => s.category_id !== removedCat.id));
+            catSubs.forEach(s => {
+              db.subcategories.delete(s.id).catch(() => {});
+              queueOp('DELETE_SUBCATEGORY', { subcatId: s.id, user_id: user!.id });
+            });
+          }
         }
         if (selectedCategory === cat) setSelectedCategory("Todos");
         const affected = productsRef.current.filter(p => p.categoria === cat);
@@ -295,16 +316,17 @@ export default function App() {
     });
   };
 
-  const deleteSubcategory = (sub: { id: string; name: string; parent_id?: string }) => {
+  const deleteSubcategory = (sub: { id: string; category_id: string; name: string }) => {
     setConfirmModal({
       message: `¿Eliminar la subcategoría "${sub.name}"? Los productos quedarán sin subcategoría.`,
       onConfirm: () => {
-        setUserCategories(prev => prev.filter(c => c.id !== sub.id));
-        db.categories.delete(sub.id).catch(() => {});
-        queueOp('DELETE_CATEGORY', { catId: sub.id, user_id: user!.id });
-        const affected = productsRef.current.filter(p => p.subcategoria === sub.name);
+        setUserSubcategories(prev => prev.filter(s => s.id !== sub.id));
+        db.subcategories.delete(sub.id).catch(() => {});
+        queueOp('DELETE_SUBCATEGORY', { subcatId: sub.id, user_id: user!.id });
+        const catName = userCategories.find(c => c.id === sub.category_id)?.name;
+        const affected = productsRef.current.filter(p => p.subcategoria === sub.name && p.categoria === catName);
         if (affected.length > 0) {
-          setProducts(prev => prev.map(p => p.subcategoria === sub.name ? { ...p, subcategoria: undefined } : p));
+          setProducts(prev => prev.map(p => affected.find(a => a.id === p.id) ? { ...p, subcategoria: undefined } : p));
           affected.forEach(p => queueOp('UPDATE_PRODUCT', fromProduct({ ...p, subcategoria: undefined }, user!.id)));
         }
         notify("Subcategoría eliminada.", "success");
@@ -395,6 +417,7 @@ export default function App() {
     db.products.toArray().then(p => { if (p.length > 0) setProducts(p); }).catch(() => {});
     db.sales.orderBy('fecha').reverse().toArray().then(s => { if (s.length > 0) setSales(s); }).catch(() => {});
     db.categories.toArray().then(c => { if (c.length > 0) setUserCategories(c); }).catch(() => {});
+    db.subcategories.toArray().then(s => { if (s.length > 0) setUserSubcategories(s); }).catch(() => {});
 
     setIsSyncing(true);
 
@@ -411,11 +434,11 @@ export default function App() {
       if (!cats || cats.length === 0) {
         const seed = DEFAULT_CATEGORIES.map(name => ({ id: uuid(), user_id: user.id, name }));
         const { data: seeded } = await supabase.from('categories').upsert(seed).select();
-        const mapped = seeded ? seeded.map((c: any) => ({ id: c.id, name: c.name, parent_id: c.parent_id ?? undefined })) : seed.map(s => ({ id: s.id, name: s.name }));
+        const mapped = seeded ? seeded.map((c: any) => ({ id: c.id, name: c.name })) : seed.map(s => ({ id: s.id, name: s.name }));
         setUserCategories(mapped);
         db.categories.bulkPut(mapped).catch(() => {});
       } else {
-        const mapped = cats.map((c: any) => ({ id: c.id, name: c.name, parent_id: c.parent_id ?? undefined }));
+        const mapped = cats.map((c: any) => ({ id: c.id, name: c.name }));
         setUserCategories(mapped);
         db.categories.bulkPut(mapped).catch(() => {});
       }
@@ -441,6 +464,13 @@ export default function App() {
       });
       setProducts(dbProds);
       db.products.bulkPut(dbProds).catch(() => {});
+
+      const { data: subcatsData } = await supabase.from('subcategories').select('*').eq('user_id', user.id);
+      if (subcatsData) {
+        const mapped = subcatsData.map((s: any) => ({ id: s.id, category_id: s.category_id, name: s.name }));
+        setUserSubcategories(mapped);
+        db.subcategories.bulkPut(mapped).catch(() => {});
+      }
 
       const { data: salesData, error: salesErr } = await supabase
         .from('sales')
@@ -494,10 +524,15 @@ export default function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'categories' }, debouncedLoad)
       .subscribe();
 
+    const subcatsSub = supabase.channel('rt-subcategories')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'subcategories' }, debouncedLoad)
+      .subscribe();
+
     return () => {
       prodsSub.unsubscribe();
       salesSub.unsubscribe();
       catsSub.unsubscribe();
+      subcatsSub.unsubscribe();
       if (reloadDebounceRef.current) clearTimeout(reloadDebounceRef.current);
     };
   }, [user]);
@@ -706,6 +741,25 @@ export default function App() {
         ));
         return wasCreatedOffline ? cleaned : [...cleaned, op];
       }
+      if (type === 'ADD_SUBCATEGORY') {
+        return [...prev.filter(p => !(p.type === 'ADD_SUBCATEGORY' && p.data.id === data.id)), op];
+      }
+      if (type === 'RENAME_SUBCATEGORY') {
+        const wasCreatedOffline = prev.some(p => p.type === 'ADD_SUBCATEGORY' && p.data.id === data.subcatId);
+        if (wasCreatedOffline) {
+          return prev.map(p => p.type === 'ADD_SUBCATEGORY' && p.data.id === data.subcatId
+            ? { ...p, data: { ...p.data, name: data.newName } } : p);
+        }
+        return [...prev.filter(p => !(p.type === 'RENAME_SUBCATEGORY' && p.data.subcatId === data.subcatId)), op];
+      }
+      if (type === 'DELETE_SUBCATEGORY') {
+        const wasCreatedOffline = prev.some(p => p.type === 'ADD_SUBCATEGORY' && p.data.id === data.subcatId);
+        const cleaned = prev.filter(p => !(
+          (p.type === 'ADD_SUBCATEGORY' && p.data.id === data.subcatId) ||
+          (p.type === 'RENAME_SUBCATEGORY' && p.data.subcatId === data.subcatId)
+        ));
+        return wasCreatedOffline ? cleaned : [...cleaned, op];
+      }
       return [...prev, op];
     });
   };
@@ -761,15 +815,22 @@ export default function App() {
             if (stockErr?.error) throw stockErr.error;
           }
         } else if (op.type === 'ADD_CATEGORY') {
-          const payload: any = { id: op.data.id, user_id: op.data.user_id, name: op.data.name };
-          if (op.data.parent_id) payload.parent_id = op.data.parent_id;
-          const { error } = await supabase.from('categories').upsert(payload);
+          const { error } = await supabase.from('categories').upsert({ id: op.data.id, user_id: op.data.user_id, name: op.data.name });
           if (error) throw error;
         } else if (op.type === 'RENAME_CATEGORY') {
           const { error } = await supabase.from('categories').update({ name: op.data.newName }).eq('id', op.data.catId);
           if (error) throw error;
         } else if (op.type === 'DELETE_CATEGORY') {
           const { error } = await supabase.from('categories').delete().eq('id', op.data.catId).eq('user_id', op.data.user_id);
+          if (error) throw error;
+        } else if (op.type === 'ADD_SUBCATEGORY') {
+          const { error } = await supabase.from('subcategories').upsert({ id: op.data.id, user_id: op.data.user_id, category_id: op.data.category_id, name: op.data.name });
+          if (error) throw error;
+        } else if (op.type === 'RENAME_SUBCATEGORY') {
+          const { error } = await supabase.from('subcategories').update({ name: op.data.newName }).eq('id', op.data.subcatId);
+          if (error) throw error;
+        } else if (op.type === 'DELETE_SUBCATEGORY') {
+          const { error } = await supabase.from('subcategories').delete().eq('id', op.data.subcatId).eq('user_id', op.data.user_id);
           if (error) throw error;
         }
       } catch (e) {
@@ -2144,8 +2205,8 @@ export default function App() {
 
                   {/* Chips de subcategorías */}
                   {(() => {
-                    const parentCat = userCategories.find(c => c.name === selectedCategory && !c.parent_id);
-                    const subs = parentCat ? userCategories.filter(c => c.parent_id === parentCat.id) : [];
+                    const parentCat = userCategories.find(c => c.name === selectedCategory);
+                    const subs = parentCat ? userSubcategories.filter(s => s.category_id === parentCat.id) : [];
                     if (subs.length === 0) return null;
                     return (
                       <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-thin -mt-1">
@@ -2521,8 +2582,8 @@ export default function App() {
 
               {/* Chips subcategorías — inventario */}
               {(() => {
-                const parentCat = userCategories.find(c => c.name === selectedCategory && !c.parent_id);
-                const subs = parentCat ? userCategories.filter(c => c.parent_id === parentCat.id) : [];
+                const parentCat = userCategories.find(c => c.name === selectedCategory);
+                const subs = parentCat ? userSubcategories.filter(s => s.category_id === parentCat.id) : [];
                 if (subs.length === 0) return null;
                 return (
                   <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-thin">
@@ -3262,15 +3323,15 @@ export default function App() {
                   onChange={(e) => setNewProduct({ ...newProduct, categoria: e.target.value, subcategoria: "" })}
                   className="w-full bg-slate-50 p-2.5 rounded-lg border border-slate-200"
                 >
-                  {userCategories.filter(c => !c.parent_id).map(cat => (
+                  {userCategories.map(cat => (
                     <option key={cat.id} value={cat.name}>{cat.name}</option>
                   ))}
                 </select>
               </div>
 
               {(() => {
-                const parentCat = userCategories.find(c => c.name === newProduct.categoria && !c.parent_id);
-                const subs = parentCat ? userCategories.filter(c => c.parent_id === parentCat.id) : [];
+                const parentCat = userCategories.find(c => c.name === newProduct.categoria);
+                const subs = parentCat ? userSubcategories.filter(s => s.category_id === parentCat.id) : [];
                 if (subs.length === 0) return null;
                 return (
                   <div>
@@ -3732,7 +3793,7 @@ export default function App() {
                     onChange={e => setEditForm({ ...editForm, categoria: e.target.value, subcategoria: "" })}
                     className="w-full bg-slate-50 p-2.5 rounded-lg border border-slate-200 focus:outline-none"
                   >
-                    {userCategories.filter(c => !c.parent_id).map(cat => (
+                    {userCategories.map(cat => (
                       <option key={cat.id} value={cat.name}>{cat.name}</option>
                     ))}
                   </select>
@@ -3750,8 +3811,8 @@ export default function App() {
               </div>
 
               {(() => {
-                const parentCat = userCategories.find(c => c.name === editForm.categoria && !c.parent_id);
-                const subs = parentCat ? userCategories.filter(c => c.parent_id === parentCat.id) : [];
+                const parentCat = userCategories.find(c => c.name === editForm.categoria);
+                const subs = parentCat ? userSubcategories.filter(s => s.category_id === parentCat.id) : [];
                 if (subs.length === 0) return null;
                 return (
                   <div>
@@ -4035,21 +4096,16 @@ export default function App() {
 
             {/* Lista de categorías con subcategorías */}
             <div className="flex flex-col gap-1 overflow-y-auto">
-              {userCategories.filter(c => !c.parent_id).map(cat => {
+              {userCategories.map(cat => {
                 const isEditing = editingCategory?.original === cat.name;
-                const subs = userCategories.filter(c => c.parent_id === cat.id);
+                const subs = userSubcategories.filter(s => s.category_id === cat.id);
                 return (
                   <div key={cat.id}>
-                    {/* Categoría padre */}
+                    {/* Categoría */}
                     <div className="flex items-center gap-2 py-2 px-3 rounded-xl hover:bg-slate-50 group">
                       {isEditing ? (
                         <form onSubmit={e => { e.preventDefault(); renameCategory(cat.name, editingCategory.value); }} className="flex flex-1 gap-2">
-                          <input
-                            autoFocus
-                            value={editingCategory.value}
-                            onChange={e => setEditingCategory({ ...editingCategory, value: e.target.value })}
-                            className="flex-1 bg-slate-50 border border-yellow-400 rounded-lg px-3 py-1.5 text-sm focus:outline-none"
-                          />
+                          <input autoFocus value={editingCategory.value} onChange={e => setEditingCategory({ ...editingCategory, value: e.target.value })} className="flex-1 bg-slate-50 border border-yellow-400 rounded-lg px-3 py-1.5 text-sm focus:outline-none" />
                           <button type="submit" className="bg-slate-800 text-white px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer">Guardar</button>
                           <button type="button" onClick={() => setEditingCategory(null)} className="text-slate-400 px-2 cursor-pointer text-xs">✕</button>
                         </form>
@@ -4057,40 +4113,18 @@ export default function App() {
                         <>
                           <span className="flex-1 text-sm font-semibold text-slate-700">{cat.name}</span>
                           <div className="flex gap-1">
-                            <button
-                              onClick={() => { setAddingSubcategoryTo(cat.id); setNewSubcategoryName(""); }}
-                              className="p-1.5 hover:bg-emerald-50 rounded-lg text-slate-400 hover:text-emerald-600 cursor-pointer transition"
-                              title="Agregar subcategoría"
-                            >
-                              <Plus className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              onClick={() => setEditingCategory({ original: cat.name, value: cat.name })}
-                              className="p-1.5 hover:bg-yellow-50 rounded-lg text-slate-400 hover:text-yellow-600 cursor-pointer transition"
-                            >
-                              <Edit3 className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              onClick={() => { setShowCategoryModal(false); deleteCategory(cat.name); }}
-                              className="p-1.5 hover:bg-rose-50 rounded-lg text-slate-400 hover:text-rose-500 cursor-pointer transition"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                            <button onClick={() => { setAddingSubcategoryTo(cat.id); setNewSubcategoryName(""); }} className="p-1.5 hover:bg-emerald-50 rounded-lg text-slate-400 hover:text-emerald-600 cursor-pointer transition" title="Agregar subcategoría"><Plus className="w-3.5 h-3.5" /></button>
+                            <button onClick={() => setEditingCategory({ original: cat.name, value: cat.name })} className="p-1.5 hover:bg-yellow-50 rounded-lg text-slate-400 hover:text-yellow-600 cursor-pointer transition"><Edit3 className="w-3.5 h-3.5" /></button>
+                            <button onClick={() => { setShowCategoryModal(false); deleteCategory(cat.name); }} className="p-1.5 hover:bg-rose-50 rounded-lg text-slate-400 hover:text-rose-500 cursor-pointer transition"><Trash2 className="w-3.5 h-3.5" /></button>
                           </div>
                         </>
                       )}
                     </div>
 
-                    {/* Input para nueva subcategoría */}
+                    {/* Input nueva subcategoría */}
                     {addingSubcategoryTo === cat.id && (
                       <form onSubmit={e => { e.preventDefault(); addSubcategory(cat.id, newSubcategoryName); }} className="flex gap-2 ml-6 mb-1">
-                        <input
-                          autoFocus
-                          value={newSubcategoryName}
-                          onChange={e => setNewSubcategoryName(e.target.value)}
-                          placeholder="Nombre subcategoría..."
-                          className="flex-1 bg-slate-50 border border-emerald-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"
-                        />
+                        <input autoFocus value={newSubcategoryName} onChange={e => setNewSubcategoryName(e.target.value)} placeholder="Nombre subcategoría..." className="flex-1 bg-slate-50 border border-emerald-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400" />
                         <button type="submit" disabled={!newSubcategoryName.trim()} className="bg-emerald-500 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer">OK</button>
                         <button type="button" onClick={() => setAddingSubcategoryTo(null)} className="text-slate-400 px-2 cursor-pointer text-xs">✕</button>
                       </form>
@@ -4098,37 +4132,22 @@ export default function App() {
 
                     {/* Subcategorías */}
                     {subs.map(sub => {
-                      const isEditingSub = editingCategory?.original === sub.name;
+                      const isEditingSub = editingSubcategory?.id === sub.id;
                       return (
-                        <div key={sub.id} className="flex items-center gap-2 py-1.5 px-3 ml-5 rounded-xl hover:bg-slate-50 group border-l-2 border-slate-100 ml-6">
+                        <div key={sub.id} className="flex items-center gap-2 py-1.5 px-3 ml-6 rounded-xl hover:bg-slate-50 border-l-2 border-slate-100">
                           {isEditingSub ? (
-                            <form onSubmit={e => { e.preventDefault(); renameCategory(sub.name, editingCategory.value); }} className="flex flex-1 gap-2">
-                              <input
-                                autoFocus
-                                value={editingCategory.value}
-                                onChange={e => setEditingCategory({ ...editingCategory, value: e.target.value })}
-                                className="flex-1 bg-slate-50 border border-yellow-400 rounded-lg px-3 py-1.5 text-sm focus:outline-none"
-                              />
+                            <form onSubmit={e => { e.preventDefault(); renameSubcategory(sub, editingSubcategory.value); }} className="flex flex-1 gap-2">
+                              <input autoFocus value={editingSubcategory.value} onChange={e => setEditingSubcategory({ ...editingSubcategory, value: e.target.value })} className="flex-1 bg-slate-50 border border-yellow-400 rounded-lg px-3 py-1.5 text-sm focus:outline-none" />
                               <button type="submit" className="bg-slate-800 text-white px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer">Guardar</button>
-                              <button type="button" onClick={() => setEditingCategory(null)} className="text-slate-400 px-2 cursor-pointer text-xs">✕</button>
+                              <button type="button" onClick={() => setEditingSubcategory(null)} className="text-slate-400 px-2 cursor-pointer text-xs">✕</button>
                             </form>
                           ) : (
                             <>
                               <span className="w-2 h-2 rounded-full bg-slate-300 shrink-0" />
                               <span className="flex-1 text-xs font-medium text-slate-500">{sub.name}</span>
                               <div className="flex gap-1">
-                                <button
-                                  onClick={() => setEditingCategory({ original: sub.name, value: sub.name })}
-                                  className="p-1.5 hover:bg-yellow-50 rounded-lg text-slate-400 hover:text-yellow-600 cursor-pointer transition"
-                                >
-                                  <Edit3 className="w-3 h-3" />
-                                </button>
-                                <button
-                                  onClick={() => { setShowCategoryModal(false); deleteSubcategory(sub); }}
-                                  className="p-1.5 hover:bg-rose-50 rounded-lg text-slate-400 hover:text-rose-500 cursor-pointer transition"
-                                >
-                                  <Trash2 className="w-3 h-3" />
-                                </button>
+                                <button onClick={() => setEditingSubcategory({ id: sub.id, category_id: sub.category_id, original: sub.name, value: sub.name })} className="p-1.5 hover:bg-yellow-50 rounded-lg text-slate-400 hover:text-yellow-600 cursor-pointer transition"><Edit3 className="w-3 h-3" /></button>
+                                <button onClick={() => { setShowCategoryModal(false); deleteSubcategory(sub); }} className="p-1.5 hover:bg-rose-50 rounded-lg text-slate-400 hover:text-rose-500 cursor-pointer transition"><Trash2 className="w-3 h-3" /></button>
                               </div>
                             </>
                           )}
