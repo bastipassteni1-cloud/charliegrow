@@ -2508,15 +2508,6 @@ export default function App() {
                       <option key={cat} value={cat}>{cat}</option>
                     ))}
                   </select>
-                  {selectedCategory !== "Todos" && selectedCategory !== "Otros" && (
-                    <button
-                      onClick={() => deleteCategory(selectedCategory)}
-                      className="p-3 bg-rose-50 hover:bg-rose-100 text-rose-500 rounded-xl transition cursor-pointer shrink-0"
-                      title="Eliminar categoría"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  )}
                 </div>
               </div>
 
