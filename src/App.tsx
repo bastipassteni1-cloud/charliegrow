@@ -431,9 +431,15 @@ export default function App() {
         return false;
       }
 
-      const dbProds = prods ? prods.map(toProduct) : [];
+      const supaProds = prods ? prods.map(toProduct) : [];
+      // Preservar campos locales (subcategoria) si Supabase devuelve null
+      const localProds = await db.products.toArray();
+      const localMap = new Map(localProds.map(p => [p.id, p]));
+      const dbProds = supaProds.map(p => {
+        const local = localMap.get(p.id);
+        return (!p.subcategoria && local?.subcategoria) ? { ...p, subcategoria: local.subcategoria } : p;
+      });
       setProducts(dbProds);
-      // Solo merge hacia Dexie — nunca borrar datos locales desde aquí
       db.products.bulkPut(dbProds).catch(() => {});
 
       const { data: salesData, error: salesErr } = await supabase
