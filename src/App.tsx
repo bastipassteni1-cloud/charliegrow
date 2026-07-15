@@ -411,11 +411,11 @@ export default function App() {
       if (!cats || cats.length === 0) {
         const seed = DEFAULT_CATEGORIES.map(name => ({ id: uuid(), user_id: user.id, name }));
         const { data: seeded } = await supabase.from('categories').upsert(seed).select();
-        const mapped = seeded ? seeded.map((c: any) => ({ id: c.id, name: c.name })) : seed.map(s => ({ id: s.id, name: s.name }));
+        const mapped = seeded ? seeded.map((c: any) => ({ id: c.id, name: c.name, parent_id: c.parent_id ?? undefined })) : seed.map(s => ({ id: s.id, name: s.name }));
         setUserCategories(mapped);
         db.categories.bulkPut(mapped).catch(() => {});
       } else {
-        const mapped = cats.map((c: any) => ({ id: c.id, name: c.name }));
+        const mapped = cats.map((c: any) => ({ id: c.id, name: c.name, parent_id: c.parent_id ?? undefined }));
         setUserCategories(mapped);
         db.categories.bulkPut(mapped).catch(() => {});
       }
@@ -755,7 +755,9 @@ export default function App() {
             if (stockErr?.error) throw stockErr.error;
           }
         } else if (op.type === 'ADD_CATEGORY') {
-          const { error } = await supabase.from('categories').upsert({ id: op.data.id, user_id: op.data.user_id, name: op.data.name });
+          const payload: any = { id: op.data.id, user_id: op.data.user_id, name: op.data.name };
+          if (op.data.parent_id) payload.parent_id = op.data.parent_id;
+          const { error } = await supabase.from('categories').upsert(payload);
           if (error) throw error;
         } else if (op.type === 'RENAME_CATEGORY') {
           const { error } = await supabase.from('categories').update({ name: op.data.newName }).eq('id', op.data.catId);
