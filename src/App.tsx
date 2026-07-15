@@ -160,6 +160,7 @@ export default function App() {
   const [lastScannedProduct, setLastScannedProduct] = useState<Product | null>(null);
   const lastScannedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<string>("Todos");
+  const [selectedSubcategory, setSelectedSubcategory] = useState<string>("Todos");
   const [userCategories, setUserCategories] = useState<{ id: string; name: string; parent_id?: string }[]>([]);
   const [addingSubcategoryTo, setAddingSubcategoryTo] = useState<string | null>(null);
   const [newSubcategoryName, setNewSubcategoryName] = useState("");
@@ -213,9 +214,10 @@ export default function App() {
   const [upgradeLoading, setUpgradeLoading] = useState(false);
 
   const userCategoryNames = userCategories.map(c => c.name);
+  const parentCategoryNames = userCategories.filter(c => !c.parent_id).map(c => c.name);
   // Categorías en productos que aún no están en userCategories (compatibilidad con datos viejos)
   const orphanCategories = Array.from(new Set(products.map(p => p.categoria).filter(c => c && !userCategoryNames.includes(c))));
-  const allCategories = ["Todos", ...userCategoryNames, ...orphanCategories];
+  const allCategories = ["Todos", ...parentCategoryNames, ...orphanCategories];
 
   const addCategory = (name: string) => {
     const trimmed = name.trim();
@@ -2096,7 +2098,7 @@ export default function App() {
                     {allCategories.map((cat) => (
                       <button
                         key={cat}
-                        onClick={() => setSelectedCategory(cat)}
+                        onClick={() => { setSelectedCategory(cat); setSelectedSubcategory("Todos"); }}
                         className={`py-1.5 px-3.5 rounded-full font-bold text-xs shrink-0 cursor-pointer transition ${
                           selectedCategory === cat
                             ? "bg-slate-800 text-white"
@@ -2132,6 +2134,32 @@ export default function App() {
                     )}
                   </div>
 
+                  {/* Chips de subcategorías */}
+                  {(() => {
+                    const parentCat = userCategories.find(c => c.name === selectedCategory && !c.parent_id);
+                    const subs = parentCat ? userCategories.filter(c => c.parent_id === parentCat.id) : [];
+                    if (subs.length === 0) return null;
+                    return (
+                      <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-thin -mt-1">
+                        <button
+                          onClick={() => setSelectedSubcategory("Todos")}
+                          className={`py-1 px-3 rounded-full font-bold text-xs shrink-0 cursor-pointer transition ${selectedSubcategory === "Todos" ? "bg-emerald-600 text-white" : "bg-emerald-50 hover:bg-emerald-100 text-emerald-700"}`}
+                        >
+                          Todas
+                        </button>
+                        {subs.map(s => (
+                          <button
+                            key={s.id}
+                            onClick={() => setSelectedSubcategory(s.name)}
+                            className={`py-1 px-3 rounded-full font-bold text-xs shrink-0 cursor-pointer transition ${selectedSubcategory === s.name ? "bg-emerald-600 text-white" : "bg-emerald-50 hover:bg-emerald-100 text-emerald-700"}`}
+                          >
+                            {s.name}
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })()}
+
                   {/* Catalog list — 2 columnas, ordenado por más vendido */}
                   {(() => {
                     const saleCount = sales.reduce((acc, sale) => {
@@ -2141,6 +2169,7 @@ export default function App() {
 
                     const filtered = products
                       .filter(p => selectedCategory === "Todos" || p.categoria === selectedCategory)
+                      .filter(p => selectedSubcategory === "Todos" || p.subcategoria === selectedSubcategory)
                       .filter(p => p.nombre.toLowerCase().includes(searchTerm.toLowerCase()))
                       .sort((a, b) => (saleCount[b.id] || 0) - (saleCount[a.id] || 0));
 
@@ -2471,7 +2500,7 @@ export default function App() {
                 <div className="col-span-1 sm:col-span-4 flex gap-2">
                   <select
                     value={selectedCategory}
-                    onChange={(e) => setSelectedCategory(e.target.value)}
+                    onChange={(e) => { setSelectedCategory(e.target.value); setSelectedSubcategory("Todos"); }}
                     className="flex-1 bg-slate-50 py-3 px-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
                   >
                     <option value="Todos">Todas las categorías</option>
@@ -2491,10 +2520,37 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Chips subcategorías — inventario */}
+              {(() => {
+                const parentCat = userCategories.find(c => c.name === selectedCategory && !c.parent_id);
+                const subs = parentCat ? userCategories.filter(c => c.parent_id === parentCat.id) : [];
+                if (subs.length === 0) return null;
+                return (
+                  <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-thin">
+                    <button
+                      onClick={() => setSelectedSubcategory("Todos")}
+                      className={`py-1 px-3 rounded-full font-bold text-xs shrink-0 cursor-pointer transition ${selectedSubcategory === "Todos" ? "bg-emerald-600 text-white" : "bg-emerald-50 hover:bg-emerald-100 text-emerald-700"}`}
+                    >
+                      Todas
+                    </button>
+                    {subs.map(s => (
+                      <button
+                        key={s.id}
+                        onClick={() => setSelectedSubcategory(s.name)}
+                        className={`py-1 px-3 rounded-full font-bold text-xs shrink-0 cursor-pointer transition ${selectedSubcategory === s.name ? "bg-emerald-600 text-white" : "bg-emerald-50 hover:bg-emerald-100 text-emerald-700"}`}
+                      >
+                        {s.name}
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
+
               {/* Vista mobile: lista de tarjetas */}
               <div className="flex flex-col divide-y divide-slate-100 sm:hidden">
                 {products
                   .filter(p => selectedCategory === "Todos" || p.categoria === selectedCategory)
+                  .filter(p => selectedSubcategory === "Todos" || p.subcategoria === selectedSubcategory)
                   .filter(p => p.nombre.toLowerCase().includes(searchTerm.toLowerCase()) || (p.codigoBarras && p.codigoBarras.includes(searchTerm)))
                   .sort((a, b) => {
                     if (inventorySort === 'stock-desc') return b.stock - a.stock;
@@ -2576,6 +2632,7 @@ export default function App() {
                   <tbody className="divide-y divide-slate-100">
                     {products
                       .filter(p => selectedCategory === "Todos" || p.categoria === selectedCategory)
+                      .filter(p => selectedSubcategory === "Todos" || p.subcategoria === selectedSubcategory)
                       .filter(p => p.nombre.toLowerCase().includes(searchTerm.toLowerCase()) || (p.codigoBarras && p.codigoBarras.includes(searchTerm)))
                       .sort((a, b) => {
                         if (inventorySort === 'stock-desc') return b.stock - a.stock;
