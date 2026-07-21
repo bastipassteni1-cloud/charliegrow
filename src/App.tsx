@@ -4319,44 +4319,22 @@ export default function App() {
         </div>
       )}
 
-      {/* Modal changelog */}
+      {/* Modal versión */}
       {showChangelog && (
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setShowChangelog(false)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
-              <div>
-                <h2 className="font-extrabold text-slate-800 text-lg">Novedades</h2>
-                <p className="text-xs text-slate-400 font-medium">Historial de actualizaciones</p>
-              </div>
+              <h2 className="font-extrabold text-slate-800 text-lg">Versión instalada</h2>
               <button onClick={() => setShowChangelog(false)} className="text-slate-400 hover:text-slate-600 cursor-pointer text-xl font-bold">✕</button>
             </div>
-            <div className="overflow-y-auto flex-1 px-5 py-4 flex flex-col gap-5">
-
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="bg-emerald-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">ACTUAL</span>
-                  <span className="text-xs font-bold text-slate-500">15 Jul 2026</span>
-                </div>
-                <ul className="flex flex-col gap-1.5">
-                  <li className="text-sm text-slate-700 flex gap-2"><span className="text-emerald-500 shrink-0">✓</span>Subcategorías ahora se guardan correctamente (tabla separada)</li>
-                  <li className="text-sm text-slate-700 flex gap-2"><span className="text-emerald-500 shrink-0">✓</span>Códigos de barra ya no se pierden al sincronizar</li>
-                  <li className="text-sm text-slate-700 flex gap-2"><span className="text-emerald-500 shrink-0">✓</span>Datos locales nunca son sobreescritos por Supabase si son más recientes</li>
-                </ul>
+            <div className="px-5 py-6 flex flex-col gap-3">
+              <div className="flex items-center gap-3 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3">
+                <span className="bg-emerald-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0">ACTUAL</span>
+                <span className="text-sm font-bold text-slate-700">
+                  {new Date(__BUILD_DATE__).toLocaleString('es-CL', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                </span>
               </div>
-
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs font-bold text-slate-500">Anterior</span>
-                </div>
-                <ul className="flex flex-col gap-1.5">
-                  <li className="text-sm text-slate-700 flex gap-2"><span className="text-slate-400 shrink-0">✓</span>App descargable funciona 100% sin internet</li>
-                  <li className="text-sm text-slate-700 flex gap-2"><span className="text-slate-400 shrink-0">✓</span>Actualizaciones automáticas sin intervención</li>
-                  <li className="text-sm text-slate-700 flex gap-2"><span className="text-slate-400 shrink-0">✓</span>Subcategorías para organizar productos</li>
-                  <li className="text-sm text-slate-700 flex gap-2"><span className="text-slate-400 shrink-0">✓</span>Búsqueda por nombre en modal de códigos de barra</li>
-                  <li className="text-sm text-slate-700 flex gap-2"><span className="text-slate-400 shrink-0">✓</span>Top 3 más vendidos bajo ventas de hoy</li>
-                </ul>
-              </div>
-
+              <p className="text-xs text-slate-400 text-center">Si ves la fecha y hora de hoy, la app está actualizada.</p>
             </div>
           </div>
         </div>
