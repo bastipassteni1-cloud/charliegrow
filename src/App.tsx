@@ -455,20 +455,21 @@ export default function App() {
       }
 
       const supaProds = prods ? prods.map(toProduct) : [];
-      // Preservar campos locales si Supabase devuelve null (evita sobreescribir datos válidos con vacíos)
+      // Merge offline-first: Dexie es fuente de verdad. Supabase gana solo si su updatedAt es más reciente.
       const localProds = await db.products.toArray();
       const localMap = new Map(localProds.map(p => [p.id, p]));
-      const dbProds = supaProds.map(p => {
-        const local = localMap.get(p.id);
-        if (!local) return p;
-        return {
-          ...p,
-          subcategoria: (!p.subcategoria && local.subcategoria) ? local.subcategoria : p.subcategoria,
-          codigoBarras: (!p.codigoBarras && local.codigoBarras) ? local.codigoBarras : p.codigoBarras,
-        };
-      });
-      setProducts(dbProds);
-      db.products.bulkPut(dbProds).catch(() => {});
+      const supaIds = new Set(supaProds.map(p => p.id));
+      const merged = [
+        ...supaProds.map(p => {
+          const local = localMap.get(p.id);
+          if (!local) return p; // producto nuevo desde Supabase (otro dispositivo)
+          const localNewer = new Date(local.updatedAt).getTime() >= new Date(p.updatedAt).getTime();
+          return localNewer ? local : p; // local gana si es igual o más nuevo
+        }),
+        ...localProds.filter(p => !supaIds.has(p.id)), // productos locales que aún no llegaron a Supabase
+      ];
+      setProducts(merged);
+      db.products.bulkPut(merged).catch(() => {});
 
       const { data: subcatsData } = await supabase.from('subcategories').select('*').eq('user_id', user.id);
       if (subcatsData) {
