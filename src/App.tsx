@@ -773,32 +773,38 @@ export default function App() {
 
   const syncQueue = async (ops: PendingOp[]) => {
     if (!user || ops.length === 0 || isSyncingRef.current) return;
-    // Punto 5: verificar conectividad real antes de intentar sincronizar
     const reallyOnline = await checkRealConnectivity();
     if (!reallyOnline) { setIsOnline(false); return; }
     isSyncingRef.current = true;
     setIsSyncingQueue(true);
-    const failed: PendingOp[] = [];
+    let productsFailed = false;
 
-    for (const op of ops) {
+    // --- Lote de productos: ADD_PRODUCT y UPDATE_PRODUCT en bulk upsert ---
+    const productOps = ops.filter(op => op.type === 'ADD_PRODUCT' || op.type === 'UPDATE_PRODUCT');
+    if (productOps.length > 0) {
+      // Deduplicar por id, quedarse con el más reciente
+      const productMap = new Map<string, any>();
+      for (const op of productOps) productMap.set(op.data.id, op.data);
+      const rows = Array.from(productMap.values());
+      const CHUNK = 100;
+      for (let i = 0; i < rows.length; i += CHUNK) {
+        try {
+          const { error } = await supabase.from('products').upsert(rows.slice(i, i + CHUNK));
+          if (error) throw error;
+        } catch (e) {
+          console.error('Bulk product sync failed:', e);
+          productsFailed = true;
+        }
+      }
+    }
+
+    // --- Resto de ops (stocks, ventas, categorías, subcategorías) ---
+    const otherOps = ops.filter(op => op.type !== 'ADD_PRODUCT' && op.type !== 'UPDATE_PRODUCT');
+    const failed: PendingOp[] = productsFailed ? productOps : [];
+
+    for (const op of otherOps) {
       try {
-        if (op.type === 'ADD_PRODUCT') {
-          const { error } = await supabase.from('products').upsert(op.data);
-          if (error) throw error;
-        } else if (op.type === 'UPDATE_PRODUCT') {
-          const { error } = await supabase.from('products').update({
-            nombre: op.data.nombre,
-            codigo_barras: op.data.codigo_barras,
-            categoria: op.data.categoria,
-            precio_compra: op.data.precio_compra,
-            precio_venta: op.data.precio_venta,
-            stock: op.data.stock,
-            stock_minimo: op.data.stock_minimo,
-            unidad_medida: op.data.unidad_medida,
-            updated_at: op.data.updated_at,
-          }).eq('id', op.data.id);
-          if (error) throw error;
-        } else if (op.type === 'DELETE_PRODUCT') {
+        if (op.type === 'DELETE_PRODUCT') {
           const { error } = await supabase.from('products').delete().eq('id', op.data.id);
           if (error) throw error;
         } else if (op.type === 'UPDATE_STOCK') {
@@ -846,7 +852,6 @@ export default function App() {
       }
     }
 
-    // Actualizar ref inmediatamente para que loadAll vea la cola vacía
     pendingOpsRef.current = failed;
     setPendingOps(failed);
     isSyncingRef.current = false;
