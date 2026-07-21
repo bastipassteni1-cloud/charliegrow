@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { login, getDexieProducts, getPendingOps, goToInventario } from './helpers';
+import { login, getDexieProducts, getPendingOps, goToInventario, createProduct } from './helpers';
 
 test.describe('Cola de sincronización', () => {
   test.beforeEach(async ({ page }) => {
@@ -7,90 +7,102 @@ test.describe('Cola de sincronización', () => {
   });
 
   test('productos offline se sincronizan en bulk al volver online', async ({ page, context }) => {
-    await goToInventario(page);
+    // Capturar console del browser para debug
+    const logs: string[] = [];
+    page.on('console', msg => logs.push(`[${msg.type()}] ${msg.text()}`));
+    page.on('pageerror', err => logs.push(`[pageerror] ${err.message}`));
 
-    // Cortar internet
+    await goToInventario(page);
     await context.setOffline(true);
 
-    // Crear 3 productos offline
     const nombres = ['Sync Test A', 'Sync Test B', 'Sync Test C'];
     for (const nombre of nombres) {
-      await page.click('text=+ Nuevo');
-      await page.fill('input[placeholder*="Nombre"]', nombre);
-      await page.fill('input[placeholder*="Precio venta"]', '1000');
-      await page.click('button:has-text("Guardar")');
-      await expect(page.locator(`text=${nombre}`).first()).toBeVisible({ timeout: 5000 });
+      await createProduct(page, { nombre, precioVenta: 1000 });
     }
 
-    // Verificar que hay ops pendientes
+    // Verificar ops pendientes
     const opsPendientes = await getPendingOps(page);
-    const addOps = opsPendientes.filter(op => op.type === 'ADD_PRODUCT');
-    expect(addOps.length).toBeGreaterThanOrEqual(3);
+    expect(opsPendientes.filter((op: any) => op.type === 'ADD_PRODUCT').length).toBeGreaterThanOrEqual(3);
 
-    // Capturar las llamadas a Supabase para verificar que va en bulk
+    // Capturar llamadas para verificar bulk upsert
     let bulkUpsertCalled = false;
     await page.route('**/rest/v1/products**', async route => {
-      const request = route.request();
-      if (request.method() === 'POST') {
-        const body = request.postDataJSON();
-        // Bulk si el body es un array con más de 1 elemento
-        if (Array.isArray(body) && body.length > 1) {
-          bulkUpsertCalled = true;
-        }
+      if (route.request().method() === 'POST') {
+        const body = route.request().postDataJSON();
+        if (Array.isArray(body) && body.length > 1) bulkUpsertCalled = true;
       }
       await route.continue();
     });
 
-    // Volver online
+    // Asegurar que checkRealConnectivity pase respondiendo rápido a categories
+    await page.route('**/rest/v1/categories**', async route => {
+      await route.fulfill({ json: [], status: 200 });
+    });
+
+    // Volver online — disparar evento manualmente porque CDP no siempre lo emite
     await context.setOffline(false);
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
 
-    // Esperar que el sync se dispare (la app detecta conexión)
+    // Debug: verificar estado del browser
+    const debugInfo = await page.evaluate(() => ({
+      navigatorOnLine: navigator.onLine,
+      pendingOps: JSON.parse(localStorage.getItem('almacen_pending') || '[]').length,
+    }));
+    console.log('DEBUG after online:', JSON.stringify(debugInfo));
+
+    // Dar 5s y ver qué logea el browser
     await page.waitForTimeout(5000);
+    console.log('Browser logs:', logs.slice(-20).join('\n'));
 
-    // Verificar que se usó bulk upsert
+    // Esperar hasta que la cola esté vacía para esos productos (max 30s)
+    await page.waitForFunction(
+      (ns: string[]) => {
+        const ops = JSON.parse(localStorage.getItem('almacen_pending') || '[]');
+        return ops.filter((op: any) => op.type === 'ADD_PRODUCT' && ns.includes(op.data?.nombre)).length === 0;
+      },
+      nombres,
+      { timeout: 30000 }
+    );
+
     expect(bulkUpsertCalled).toBe(true);
 
-    // Verificar que la cola quedó vacía
+    // Cola vacía para esos productos
     const opsRestantes = await getPendingOps(page);
-    const addOpsRestantes = opsRestantes.filter(op =>
-      op.type === 'ADD_PRODUCT' && nombres.includes(op.data.nombre)
-    );
-    expect(addOpsRestantes.length).toBe(0);
+    expect(opsRestantes.filter((op: any) =>
+      op.type === 'ADD_PRODUCT' && nombres.includes(op.data?.nombre)
+    ).length).toBe(0);
   });
 
-  test('datos locales son más nuevos que Supabase — Dexie gana', async ({ page }) => {
-    // Crear producto
-    await goToInventario(page);
-    await page.click('text=+ Nuevo');
-    await page.fill('input[placeholder*="Nombre"]', 'Test Merge Priority');
-    await page.fill('input[placeholder*="Precio venta"]', '9999');
-    await page.click('button:has-text("Guardar")');
-    await expect(page.locator('text=Test Merge Priority').first()).toBeVisible({ timeout: 8000 });
+  test('Dexie gana sobre Supabase cuando datos locales son más nuevos', async ({ page }) => {
+    await createProduct(page, { nombre: 'Test Merge Priority', precioVenta: 9999 });
+    await page.waitForTimeout(2000);
 
-    // Simular que Supabase devuelve el mismo producto con precio distinto y fecha más antigua
+    // Supabase devuelve el mismo producto con precio viejo y fecha más antigua (solo interceptar GET)
     await page.route('**/rest/v1/products**', async route => {
+      if (route.request().method() !== 'GET') {
+        await route.continue();
+        return;
+      }
       const response = await route.fetch();
       const json = await response.json();
       if (Array.isArray(json)) {
-        const modified = json.map((p: any) =>
+        await route.fulfill({ json: json.map((p: any) =>
           p.nombre === 'Test Merge Priority'
             ? { ...p, precio_venta: 1, updated_at: '2020-01-01T00:00:00.000Z' }
             : p
-        );
-        await route.fulfill({ json: modified });
+        )});
       } else {
         await route.continue();
       }
     });
 
-    // Forzar loadAll
     await page.reload();
-    await expect(page.locator('text=Caja').or(page.locator('text=Stock'))).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('#tab-caja')).toBeVisible({ timeout: 15000 });
     await page.waitForTimeout(2000);
 
-    // Verificar que Dexie tiene el precio correcto (9999), no el de Supabase (1)
+    // Precio en Dexie debe ser 9999, no el 1 de Supabase
     const productos = await getDexieProducts(page);
-    const prod = productos.find(p => p.nombre === 'Test Merge Priority');
+    const prod = productos.find((p: any) => p.nombre === 'Test Merge Priority');
     expect(prod?.precioVenta).toBe(9999);
   });
 });

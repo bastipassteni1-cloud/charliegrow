@@ -23,19 +23,20 @@ export const toProduct = (row: any): Product => ({
 });
 
 // Product → Row (camelCase TS → snake_case DB)
+// Nota: subcategoria NO se incluye — la tabla products en Supabase no tiene esa columna
+// (las subcategorías viven en la tabla separada 'subcategories')
 export const fromProduct = (p: Product, userId: string) => ({
   id: p.id,
   user_id: userId,
   nombre: p.nombre,
   codigo_barras: p.codigoBarras || null,
   categoria: p.categoria,
-  subcategoria: p.subcategoria || null,
   precio_compra: p.precioCompra,
   precio_venta: p.precioVenta,
   stock: p.stock,
   stock_minimo: p.stockMinimo,
   unidad_medida: p.unidadMedida,
-  updated_at: new Date().toISOString(),
+  updated_at: p.updatedAt,
 });
 
 // Sale row (con sale_items anidados) → Sale TS

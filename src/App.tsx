@@ -3324,8 +3324,9 @@ export default function App() {
 
             <form onSubmit={handleAddProduct} className="flex flex-col gap-3 text-xs">
               <div>
-                <label className="block text-slate-500 font-bold mb-1 font-sans">Nombre del Producto *</label>
+                <label htmlFor="add-product-nombre" className="block text-slate-500 font-bold mb-1 font-sans">Nombre del Producto *</label>
                 <input
+                  id="add-product-nombre"
                   type="text"
                   required
                   value={newProduct.nombre}
@@ -3402,8 +3403,9 @@ export default function App() {
                   />
                 </div>
                 <div>
-                  <label className="block text-slate-700 font-bold mb-1 font-sans">Precio Venta *</label>
+                  <label htmlFor="add-product-precio-venta" className="block text-slate-700 font-bold mb-1 font-sans">Precio Venta *</label>
                   <input
+                    id="add-product-precio-venta"
                     type="number"
                     required
                     value={newProduct.precioVenta}
