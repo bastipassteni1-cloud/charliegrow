@@ -800,9 +800,18 @@ export default function App() {
 
     // --- Resto de ops (stocks, ventas, categorías, subcategorías) ---
     const otherOps = ops.filter(op => op.type !== 'ADD_PRODUCT' && op.type !== 'UPDATE_PRODUCT');
-    const failed: PendingOp[] = productsFailed ? productOps : [];
+    const failed: PendingOp[] = productsFailed ? [...productOps] : [];
+    // IDs de productos que fallaron en el bulk — sus UPDATE_STOCK deben retenerse también
+    const failedProductIds = productsFailed
+      ? new Set(productOps.map(op => op.data.id))
+      : new Set<string>();
 
     for (const op of otherOps) {
+      // Si el producto padre no llegó a Supabase, no ejecutar el UPDATE_STOCK
+      if (op.type === 'UPDATE_STOCK' && failedProductIds.has(op.data.id)) {
+        failed.push(op);
+        continue;
+      }
       try {
         if (op.type === 'DELETE_PRODUCT') {
           const { error } = await supabase.from('products').delete().eq('id', op.data.id);
