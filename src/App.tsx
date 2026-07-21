@@ -455,12 +455,17 @@ export default function App() {
       }
 
       const supaProds = prods ? prods.map(toProduct) : [];
-      // Preservar campos locales (subcategoria) si Supabase devuelve null
+      // Preservar campos locales si Supabase devuelve null (evita sobreescribir datos válidos con vacíos)
       const localProds = await db.products.toArray();
       const localMap = new Map(localProds.map(p => [p.id, p]));
       const dbProds = supaProds.map(p => {
         const local = localMap.get(p.id);
-        return (!p.subcategoria && local?.subcategoria) ? { ...p, subcategoria: local.subcategoria } : p;
+        if (!local) return p;
+        return {
+          ...p,
+          subcategoria: (!p.subcategoria && local.subcategoria) ? local.subcategoria : p.subcategoria,
+          codigoBarras: (!p.codigoBarras && local.codigoBarras) ? local.codigoBarras : p.codigoBarras,
+        };
       });
       setProducts(dbProds);
       db.products.bulkPut(dbProds).catch(() => {});
