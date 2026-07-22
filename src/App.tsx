@@ -786,7 +786,8 @@ export default function App() {
       // Deduplicar por id, quedarse con el más reciente
       const productMap = new Map<string, any>();
       for (const op of productOps) productMap.set(op.data.id, op.data);
-      const rows = Array.from(productMap.values());
+      // Sanitizar ops antiguas que puedan tener columnas inexistentes en Supabase (ej: subcategoria)
+      const rows = Array.from(productMap.values()).map(({ subcategoria, ...rest }: any) => rest);
       const CHUNK = 100;
       for (let i = 0; i < rows.length; i += CHUNK) {
         try {
