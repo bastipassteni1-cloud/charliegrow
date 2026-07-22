@@ -652,7 +652,7 @@ export default function App() {
           lastScannedRef.current = barcode;
           setTimeout(() => { if (active) lastScannedRef.current = null; }, 2500);
 
-          const matched = productsRef.current.find(p => p.codigoBarras === barcode);
+          const matched = productsRef.current.find(p => p.codigoBarras.toUpperCase() === barcode.toUpperCase());
           if (matched) {
             addToCart(matched);
             notify(`✓ ${matched.nombre} agregado al carrito`, "success");
@@ -986,7 +986,7 @@ export default function App() {
     }
 
     if (newProduct.codigoBarras.trim()) {
-      const dup = productsRef.current.find(p => p.codigoBarras === newProduct.codigoBarras.trim());
+      const dup = productsRef.current.find(p => p.codigoBarras.toUpperCase() === newProduct.codigoBarras.trim().toUpperCase());
       if (dup) {
         notify(`El código "${newProduct.codigoBarras.trim()}" ya está asignado a "${dup.nombre}".`, "error");
         return;
@@ -1176,7 +1176,7 @@ export default function App() {
         return;
       }
 
-      const product = productsRef.current.find(p => p.codigoBarras === barcode);
+      const product = productsRef.current.find(p => p.codigoBarras.toUpperCase() === barcode.toUpperCase());
       if (product) {
         addToCart(product);
         notify(`✓ ${product.nombre} agregado al carrito`, "success");
@@ -1210,7 +1210,7 @@ export default function App() {
       }
 
       // Primero: buscar en el inventario propio (cubre productos chilenos no indexados globalmente)
-      const inventoryMatch = products.find(p => p.codigoBarras === barcode);
+      const inventoryMatch = products.find(p => p.codigoBarras.toUpperCase() === barcode.toUpperCase());
       if (inventoryMatch) {
         setAiInventoryMatch(inventoryMatch);
         return;
@@ -1315,7 +1315,7 @@ export default function App() {
     }
 
     if (aiAnalyzedProduct.codigoBarras?.trim()) {
-      const dup = productsRef.current.find(p => p.codigoBarras === aiAnalyzedProduct.codigoBarras.trim());
+      const dup = productsRef.current.find(p => p.codigoBarras.toUpperCase() === aiAnalyzedProduct.codigoBarras.trim().toUpperCase());
       if (dup) {
         notify(`El código "${aiAnalyzedProduct.codigoBarras.trim()}" ya está asignado a "${dup.nombre}".`, "error");
         return;
@@ -1378,7 +1378,7 @@ export default function App() {
     }
 
     if (editForm.codigoBarras.trim()) {
-      const dup = productsRef.current.find(p => p.codigoBarras === editForm.codigoBarras.trim() && p.id !== showEditStockModal.id);
+      const dup = productsRef.current.find(p => p.codigoBarras.toUpperCase() === editForm.codigoBarras.trim().toUpperCase() && p.id !== showEditStockModal.id);
       if (dup) {
         notify(`El código "${editForm.codigoBarras.trim()}" ya está asignado a "${dup.nombre}".`, "error");
         return;
@@ -1419,7 +1419,7 @@ export default function App() {
 
     // Guardar código en producto si cambió
     if (code !== showBarcodeModal.codigoBarras) {
-      const dup = productsRef.current.find(p => p.codigoBarras === code && p.id !== showBarcodeModal.id);
+      const dup = productsRef.current.find(p => p.codigoBarras.toUpperCase() === code.toUpperCase() && p.id !== showBarcodeModal.id);
       if (dup) {
         notify(`El código "${code}" ya está asignado a "${dup.nombre}".`, "error");
         return;
@@ -1638,7 +1638,7 @@ export default function App() {
     const code = barcodeSearch.trim();
     if (!code) return;
 
-    const matched = productsRef.current.find(p => p.codigoBarras === code);
+    const matched = productsRef.current.find(p => p.codigoBarras.toUpperCase() === code.toUpperCase());
     if (matched) {
       addToCart(matched);
       setBarcodeSearch("");
@@ -2161,7 +2161,7 @@ export default function App() {
                   {(() => {
                     const code = barcodeSearch.trim();
                     if (!code) return null;
-                    const match = products.find(p => p.codigoBarras === code);
+                    const match = products.find(p => p.codigoBarras.toUpperCase() === code.toUpperCase());
                     if (!match) return null;
                     return (
                       <button
