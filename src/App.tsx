@@ -210,6 +210,7 @@ export default function App() {
 
   // Upgrade de cuenta anónima a permanente
   const [showChangelog, setShowChangelog] = useState(false);
+  const [showQueueDebug, setShowQueueDebug] = useState(false);
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [upgradeEmail, setUpgradeEmail] = useState('');
   const [upgradePassword, setUpgradePassword] = useState('');
@@ -1923,6 +1924,13 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => setShowQueueDebug(true)}
+              className="w-10 h-10 flex items-center justify-center rounded-xl bg-slate-100 hover:bg-slate-200 transition cursor-pointer text-base font-bold text-slate-500"
+              title="Ver cola de sincronización"
+            >
+              ⚙
+            </button>
             <button
               onClick={() => setIsDark(d => !d)}
               className="w-10 h-10 flex items-center justify-center rounded-xl bg-slate-100 hover:bg-slate-200 transition cursor-pointer text-xl"
@@ -4368,6 +4376,49 @@ export default function App() {
           </button>
         </div>
       )}
+
+      {showQueueDebug && (() => {
+        const raw = localStorage.getItem('almacen_pending') || '[]';
+        let ops: any[] = [];
+        try { ops = JSON.parse(raw); } catch {}
+        return (
+          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setShowQueueDebug(false)}>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+                <div>
+                  <h2 className="font-bold text-slate-800">Cola de sincronización</h2>
+                  <p className="text-xs text-slate-400 mt-0.5">{ops.length} operaciones pendientes</p>
+                </div>
+                <button onClick={() => setShowQueueDebug(false)} className="text-slate-400 hover:text-slate-600 text-xl font-bold cursor-pointer">✕</button>
+              </div>
+              <div className="overflow-y-auto flex-1 p-4 flex flex-col gap-2">
+                {ops.length === 0 && <p className="text-slate-400 text-sm text-center py-6">Cola vacía — no hay operaciones pendientes</p>}
+                {ops.map((op, i) => (
+                  <div key={i} className="bg-slate-50 rounded-xl p-3 text-xs font-mono border border-slate-100">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded-lg">{op.type}</span>
+                      <span className="text-slate-400">{op.timestamp ? new Date(op.timestamp).toLocaleString('es-CL') : ''}</span>
+                    </div>
+                    <div className="text-slate-500 break-all">
+                      {op.data?.nombre && <span className="text-slate-700 font-bold">{op.data.nombre} </span>}
+                      {op.data?.codigo_barras && <span>barcode: {op.data.codigo_barras} </span>}
+                      {op.data?.subcategoria !== undefined && <span className="text-red-500 font-bold">⚠ subcategoria: {String(op.data.subcategoria)}</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="px-5 py-3 border-t border-slate-100">
+                <button
+                  onClick={() => { navigator.clipboard?.writeText(raw); notify('Cola copiada al portapapeles', 'success'); }}
+                  className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm py-2.5 rounded-xl transition cursor-pointer"
+                >
+                  Copiar JSON completo
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
     </div>
   );
