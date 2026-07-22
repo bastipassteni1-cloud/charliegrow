@@ -2648,7 +2648,7 @@ export default function App() {
                 {products
                   .filter(p => selectedCategory === "Todos" || p.categoria === selectedCategory)
                   .filter(p => selectedSubcategory === "Todos" || p.subcategoria === selectedSubcategory)
-                  .filter(p => p.nombre.toLowerCase().includes(searchTerm.toLowerCase()) || (p.codigoBarras && p.codigoBarras.includes(searchTerm)))
+                  .filter(p => p.nombre.toLowerCase().includes(searchTerm.toLowerCase()) || (p.codigoBarras && p.codigoBarras.toUpperCase().includes(searchTerm.toUpperCase())))
                   .sort((a, b) => {
                     if (inventorySort === 'stock-desc') return b.stock - a.stock;
                     if (inventorySort === 'stock-asc') return a.stock - b.stock;
@@ -2730,7 +2730,7 @@ export default function App() {
                     {products
                       .filter(p => selectedCategory === "Todos" || p.categoria === selectedCategory)
                       .filter(p => selectedSubcategory === "Todos" || p.subcategoria === selectedSubcategory)
-                      .filter(p => p.nombre.toLowerCase().includes(searchTerm.toLowerCase()) || (p.codigoBarras && p.codigoBarras.includes(searchTerm)))
+                      .filter(p => p.nombre.toLowerCase().includes(searchTerm.toLowerCase()) || (p.codigoBarras && p.codigoBarras.toUpperCase().includes(searchTerm.toUpperCase())))
                       .sort((a, b) => {
                         if (inventorySort === 'stock-desc') return b.stock - a.stock;
                         if (inventorySort === 'stock-asc') return a.stock - b.stock;
